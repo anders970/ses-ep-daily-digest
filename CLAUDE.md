@@ -196,22 +196,26 @@ email side by side.
 
 ## Open issues / next steps
 
-1. **[ROOT CAUSE STILL UNKNOWN] Nightly + weekly triggers failing.** The
-   Executions panel (Sep 22–28, 2026) showed EVERY weekday
-   `runNightlyDigest` and the Sep 28 `runWeeklyDigest` as **Failed after
-   8–52 s** — i.e. a thrown error early in the run, NOT the 6-minute
-   timeout originally suspected (a manual `testDailyUrgentComparison` on
-   Sep 21 completed in ~402 s). The error text wasn't captured yet.
-   - Done: staged-trigger pipeline (above), error-alert emails, missing-
-     snapshot alerts, single-pass build (phase data no longer re-fetched),
-     one ledger read per run, Gemini only for PMs with an email.
-   - Candidate cause, defensively fixed: `LockedThroughDate` read back from
-     Sheets as a `Date` object was sent to Birdview's `EntryDateFrom` as a
-     `Date.toString()` string; now normalized to ISO. The manual Sep 21 run
-     didn't include the ledger update, which fits — but unconfirmed.
-   - Next action: after deploying, read the error text (the new
-     "[Birdview Digest] … failed" email, or expand a failed row in
-     Executions) and fix the actual cause if it's something else.
+1. **[LIKELY FIXED — confirm on next scheduled runs] Nightly + weekly
+   triggers failing.** The Executions panel (Sep 22–28, 2026) showed EVERY
+   weekday `runNightlyDigest` and the Sep 28 `runWeeklyDigest` as **Failed
+   after 8–52 s** — a thrown error early in the run, NOT the 6-minute
+   timeout originally suspected. The error text was never captured.
+   - Most likely cause (fixed): `LockedThroughDate` read back from Sheets as
+     a `Date` object was sent to Birdview's `EntryDateFrom` as a
+     `Date.toString()` string; now normalized to ISO. Evidence: the ledger
+     update is the step that runs first, and a manual `testNightlyBuild()`
+     on Sep 28 after the fix completed cleanly.
+   - Also done: staged-trigger pipeline (above), error-alert emails,
+     missing-snapshot alerts, single-pass build, one ledger read per run,
+     Gemini only for PMs with an email.
+   - **Measured `testNightlyBuild()` timings (Sep 28, 2026):** ledger update
+     44 s (109 projects, 2,833 time logs in the active window); dataset build
+     2 m 39 s (956 task rows + 234 phase rows); snapshots 6 s — **~3.5 min
+     total**, vs. the 6-min per-execution limit. The ledger window keeps
+     growing until rollover (#3) is built, so watch this number.
+   - If a "[Birdview Digest] … failed" email ever arrives, its error text is
+     the next thing to fix.
 2. **Watchdog** — partly covered: stages 2/3 email Anders if today's
    snapshot is missing. Not covered: stage 2/3 themselves timing out (they're
    now lightweight, so unlikely), or a trigger never firing at all.
