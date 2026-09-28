@@ -38,7 +38,7 @@ time), since file load order isn't something to rely on.
 | `Ledger.gs` | Ledger spreadsheet access (URL hardcoded in `getLedgerSpreadsheet_()`), ledger backfill/daily update, `calculateExpectedProfitPercent_`. |
 | `Dataset.gs` | `buildNightlyData_()` (single pass → task rows + phase rows), `buildTaskFlags_`, all Drive snapshot helpers. |
 | `DailyAlerts.gs` | Profit-drop + hours-exceeded detection, shared email helpers/sections, the "[Current]" urgent email builder. |
-| `WeeklyDigest.gs` | Monday digest: the two task lists (0 hours left / overdue), profit summary, email. |
+| `WeeklyDigest.gs` | Monday digest: the three task lists (0 hours left + overdue / 0 hours left / overdue), profit summary, email. |
 | `PhaseTrial.gs` | A/B trial: phase aggregation + tracking + "[Trial: +Phases]" email, and `runDailyUrgentComparison()` — the stage-2 orchestrator that sends BOTH urgent emails. Once the trial is decided, fold the winner into `DailyAlerts.gs` and delete this file. |
 | `Tests.gs` | Manual-only helpers: `testNightlyBuild`, `testDailyUrgentComparison`, `testWeeklyDigest`, `verifyExpectedProfitPercent`, `printSesPmLookup`, the TESTING-ONLY tracking reset. |
 | `appsscript.json` | Manifest. Declares the `OAuth2` library dependency (Apps Script "OAuth2 for Apps Script") used for the Birdview Authorization Code Grant flow. Time zone `America/Vancouver`. |
@@ -161,12 +161,16 @@ BRAND-NEW occurrences, no Gemini call, compact one-line formatting:
    snapshot.
 
 **Weekly digest** (`runWeeklyDigest`, Monday mornings) — deterministic, no
-AI calls. Two task lists, each grouped by project (projects alphabetical):
-1. "Open tasks with 0 hours left" — `RED_NO_HOURS_LEFT`, most over-budget
-   (actual − estimated hours) first.
-2. "Open tasks with an overdue end date" — `PAST_DUE`, most overdue first.
+AI calls. Three mutually exclusive task lists (a task appears in only one),
+each grouped by project (projects alphabetical):
+1. "Open tasks with 0 hours left AND an overdue end date" — both
+   `RED_NO_HOURS_LEFT` and `PAST_DUE`, most overdue first.
+2. "Open tasks with 0 hours left" — `RED_NO_HOURS_LEFT` only, most
+   over-budget (actual − estimated hours) first.
+3. "Open tasks with an overdue end date" — `PAST_DUE` only, most overdue
+   first.
 
-A task with both flags appears in both lists. Format per project:
+Format per project:
 ```
 Project Name        (link to EP project)
 └ Task Name         (link to EP task)

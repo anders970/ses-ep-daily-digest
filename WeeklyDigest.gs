@@ -22,17 +22,27 @@ function sendWeeklyDigestFromSnapshot_() {
     }
     var pmRows = todayRows.filter(function(r) { return r.SES_PM === pmName; });
 
-    // Most over-budget first / most overdue first, so the tasks shown before
-    // "(X more tasks)" are the ones that most need attention.
-    var noHoursLeft = pmRows.filter(function(r) { return hasFlag_(r, 'RED_NO_HOURS_LEFT'); })
-      .sort(function(a, b) { return (b.ActualHours - b.EstimatedHours) - (a.ActualHours - a.EstimatedHours); });
-    var overdue = pmRows.filter(function(r) { return hasFlag_(r, 'PAST_DUE'); })
-      .sort(function(a, b) { return new Date(a.EndDate) - new Date(b.EndDate); });
+    // The three lists are mutually exclusive — a task with both flags only
+    // appears in the first. Sorted so the tasks shown before "(X more tasks)"
+    // are the ones that most need attention.
+    var byOverdue = function(a, b) { return new Date(a.EndDate) - new Date(b.EndDate); };
+    var byOverBudget = function(a, b) { return (b.ActualHours - b.EstimatedHours) - (a.ActualHours - a.EstimatedHours); };
+    var both = [], noHoursLeft = [], overdue = [];
+    pmRows.forEach(function(r) {
+      var isNoHours = hasFlag_(r, 'RED_NO_HOURS_LEFT');
+      var isOverdue = hasFlag_(r, 'PAST_DUE');
+      if (isNoHours && isOverdue) both.push(r);
+      else if (isNoHours) noHoursLeft.push(r);
+      else if (isOverdue) overdue.push(r);
+    });
+    both.sort(byOverdue);
+    noHoursLeft.sort(byOverBudget);
+    overdue.sort(byOverdue);
     var profitSummary = buildWeeklyProfitabilitySummary_(pmName, todayRows, weekAgoRows);
 
-    if (noHoursLeft.length === 0 && overdue.length === 0 && profitSummary.length === 0) return;
+    if (both.length === 0 && noHoursLeft.length === 0 && overdue.length === 0 && profitSummary.length === 0) return;
 
-    var emailBody = buildWeeklyDigestEmailHtml_(pmName, noHoursLeft, overdue, profitSummary);
+    var emailBody = buildWeeklyDigestEmailHtml_(pmName, both, noHoursLeft, overdue, profitSummary);
     sendDigestEmail_(pmName, 'Weekly Project Digest - Week of ' + formatDateForFilename_(new Date()), emailBody);
   });
 }
@@ -92,9 +102,10 @@ function buildWeeklyTaskSectionHtml_(title, rows) {
   return html;
 }
 
-function buildWeeklyDigestEmailHtml_(pmName, noHoursLeftRows, overdueRows, profitSummary) {
+function buildWeeklyDigestEmailHtml_(pmName, bothRows, noHoursLeftRows, overdueRows, profitSummary) {
   var html = '<p>Hi ' + pmName + ',</p><p>Here\'s your weekly project status digest:</p>';
 
+  html += buildWeeklyTaskSectionHtml_('&#9888;&#65039; Open tasks with 0 hours left AND an overdue end date', bothRows);
   html += buildWeeklyTaskSectionHtml_('&#128308; Open tasks with 0 hours left', noHoursLeftRows);
   html += buildWeeklyTaskSectionHtml_('&#128197; Open tasks with an overdue end date', overdueRows);
 
