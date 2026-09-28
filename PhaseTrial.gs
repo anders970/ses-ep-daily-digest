@@ -27,54 +27,52 @@ function getAllLeafTasksFromAll_(allTasks) {
   });
 }
 
-// Walks each leaf task up its ParentId chain to find its top-level ("phase")
-// ancestor, then sums estimated/actual hours per phase.
+// Phases = top-level tasks that have children. Each open leaf task's hours roll
+// up to its top-level ancestor. (Aggregation logic taken verbatim from the live
+// Apps Script version.)
 function buildPhaseAggregates_(allTasks, hoursMap) {
-  var taskLookup = {};
-  allTasks.forEach(function(t) { taskLookup[t.TaskId] = t; });
+  var taskById = {};
+  allTasks.forEach(function(t) { taskById[t.TaskId] = t; });
 
-  function findTopLevelAncestor(task) {
-    var current = task;
-    while (current.ParentId && taskLookup[current.ParentId]) {
-      current = taskLookup[current.ParentId];
+  function getTopLevelAncestorId_(taskId) {
+    var current = taskById[taskId];
+    while (current && current.ParentId) {
+      var parent = taskById[current.ParentId];
+      if (!parent) break;
+      current = parent;
     }
-    return current;
+    return current ? current.TaskId : null;
   }
 
-  var leafTasks = getAllLeafTasksFromAll_(allTasks);
-  var phaseMap = {}; // phaseTaskId -> { phaseTask, estimatedHours, actualHours }
-
-  leafTasks.forEach(function(task) {
-    var phaseTask = findTopLevelAncestor(task);
-    if (phaseTask.TaskId === task.TaskId) return; // task IS a top-level task, not part of a phase — skip
-
-    if (!phaseMap[phaseTask.TaskId]) {
-      phaseMap[phaseTask.TaskId] = { phaseTask: phaseTask, estimatedHours: 0, actualHours: 0 };
+  var phases = {};
+  allTasks.forEach(function(t) {
+    if (!t.ParentId && t.HasChild) {
+      phases[t.TaskId] = { taskId: t.TaskId, name: t.Name, estimatedHours: 0, actualHours: 0 };
     }
-    phaseMap[phaseTask.TaskId].estimatedHours += task.EstimatedHours || 0;
-    phaseMap[phaseTask.TaskId].actualHours += hoursMap[task.TaskId] || 0;
   });
 
-  return phaseMap;
-}
+  getAllLeafTasksFromAll_(allTasks).forEach(function(task) {
+    var topId = getTopLevelAncestorId_(task.TaskId);
+    if (topId != null && phases[topId]) {
+      phases[topId].estimatedHours += (task.EstimatedHours || 0);
+      phases[topId].actualHours += (hoursMap[task.TaskId] || 0);
+    }
+  });
 
-function getPhaseUrl_(phaseTaskId) {
-  return buildTaskUrl_(phaseTaskId); // phases are just tasks, so they share the task URL format
+  return Object.keys(phases).map(function(id) { return phases[id]; });
 }
 
 // One row per phase for a single project. Called from Code.gs's buildNightlyData_
 // with the tasks + hours it already fetched, so there's no second Birdview pass.
 function buildPhaseRowsForProject_(project, pmName, allTasks, hoursMap) {
-  var phaseMap = buildPhaseAggregates_(allTasks, hoursMap);
-  return Object.keys(phaseMap).map(function(phaseTaskId) {
-    var phase = phaseMap[phaseTaskId];
+  return buildPhaseAggregates_(allTasks, hoursMap).map(function(phase) {
     return {
       ProjectId: project.ProjectId,
       ProjectName: project.Name,
       SES_PM: pmName,
-      PhaseTaskId: Number(phaseTaskId),
-      PhaseName: phase.phaseTask.Name,
-      PhaseUrl: getPhaseUrl_(phaseTaskId),
+      PhaseTaskId: phase.taskId,
+      PhaseName: phase.name,
+      PhaseUrl: buildTaskUrl_(phase.taskId),
       EstimatedHours: phase.estimatedHours,
       ActualHours: phase.actualHours
     };
