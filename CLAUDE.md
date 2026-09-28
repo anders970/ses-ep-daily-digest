@@ -25,22 +25,23 @@ web editor; it's now managed here and synced to Apps Script with `clasp`
 
 ## File layout
 
-- `Code.gs` — the live, "current design." OAuth, Birdview API access, the
-  profitability ledger, the daily dataset builder, snapshotting, the daily
-  urgent alert (profit drops + hours-exceeded-estimate), the weekly digest
-  (Gemini-assisted), triggers, and test/debug helpers.
-- `PhaseTrial.gs` — an A/B test living alongside `Code.gs` without touching
-  it. Adds a "phase-level" alert (rolls hours up to a project's top-level
-  parent tasks) and sends it as a second, separately-labeled email so the
-  two designs can be compared side by side. The `runNightlyAlerts` trigger
-  calls `runDailyUrgentComparison()` from this file (NOT
-  `runDailyUrgentCheck()`), so both emails go out every night during the
-  trial. Phase rows are computed inside `Code.gs`'s single-pass
-  `buildNightlyData_()` via `buildPhaseRowsForProject_()` and saved as their
-  own snapshot file.
-- `appsscript.json` — manifest. Declares the `OAuth2` library dependency
-  (Apps Script "OAuth2 for Apps Script" library) used for the Birdview
-  Authorization Code Grant flow.
+Apps Script shares ONE global scope across all `.gs` files, so functions and
+constants in any file are callable from any other — no imports. Keep all
+top-level statements to plain literals (no cross-file references at load
+time), since file load order isn't something to rely on.
+
+| File | Contents |
+|---|---|
+| `Config.gs` | All shared constants (Birdview IDs, thresholds, snapshot names), `ADMIN_EMAIL`, `PM_EMAIL_MAP` + `getPmEmail_`. Setup checklist in the header. |
+| `Triggers.gs` | The staged pipeline entry points (`runNightlyDigest`, `runNightlyAlerts`, `runWeeklyDigest`), `runWithErrorAlert_` / `notifyAdmin_`, `setupTriggers`, `listTriggers`. |
+| `Birdview.gs` | OAuth (`authorize`, `authCallback`, `resetBirdviewAuth`), request/paging helpers, project/PM/user-rate lookups, task/hours/assignee helpers, URL builders. |
+| `Ledger.gs` | Ledger spreadsheet access (URL hardcoded in `getLedgerSpreadsheet_()`), ledger backfill/daily update, `calculateExpectedProfitPercent_`. |
+| `Dataset.gs` | `buildNightlyData_()` (single pass → task rows + phase rows), `buildTaskFlags_`, all Drive snapshot helpers. |
+| `DailyAlerts.gs` | Profit-drop + hours-exceeded detection, shared email helpers/sections, the "[Current]" urgent email builder. |
+| `WeeklyDigest.gs` | Monday digest: grouping, profit summary, Gemini call, email. |
+| `PhaseTrial.gs` | A/B trial: phase aggregation + tracking + "[Trial: +Phases]" email, and `runDailyUrgentComparison()` — the stage-2 orchestrator that sends BOTH urgent emails. Once the trial is decided, fold the winner into `DailyAlerts.gs` and delete this file. |
+| `Tests.gs` | Manual-only helpers: `testNightlyBuild`, `testDailyUrgentComparison`, `testWeeklyDigest`, `verifyExpectedProfitPercent`, `printSesPmLookup`, the TESTING-ONLY tracking reset. |
+| `appsscript.json` | Manifest. Declares the `OAuth2` library dependency (Apps Script "OAuth2 for Apps Script") used for the Birdview Authorization Code Grant flow. Time zone `America/Vancouver`. |
 
 ## Setup checklist (fresh environment)
 
@@ -145,8 +146,8 @@ Expected Profit % = (EAC billable − EAC cost) / EAC billable × 100
 
 ## Alert design
 
-**Daily "urgent" email** (`runDailyUrgentCheck` in Code.gs / the "[Current]"
-half of `runDailyUrgentComparison` in PhaseTrial.gs) — fires only for
+**Daily "urgent" email** (the "[Current]" half of `runDailyUrgentComparison`
+in PhaseTrial.gs, built by `buildDailyUrgentEmailHtml_` in DailyAlerts.gs) — fires only for
 BRAND-NEW occurrences, no Gemini call, compact one-line formatting:
 1. A task's actual hours have newly exceeded its ORIGINAL `EstimatedHours`
    (fires once ever per task, via the `HoursExceededNotified` tracking
@@ -224,11 +225,7 @@ email side by side.
    into `LockedTotals` and advances `LockedThroughDate`. Over time the
    detail sheet and the per-run query window will keep growing. Needs a
    periodic (e.g. weekly) rollover step.
-4. Old `callGeminiForDailyUrgent_`-style Gemini calls for the daily urgent
-   email were removed in favor of deterministic compact formatting (no
-   Gemini needed for profit-drop or hours-exceeded lines) — confirm nothing
-   still references a function like that if it turns up during further
-   cleanup. Also double check the Gemini model string used in
+4. Double check the Gemini model string used in
    `callGeminiForWeeklyTasks_` (`gemini-3.5-flash`) is still correct/current
    before the next round of changes.
 5. **Rollout plan**: extend `PM_EMAIL_MAP` from just Anders to all 13 PMs
@@ -236,13 +233,13 @@ email side by side.
    bug is fixed, then move the whole thing from Anders's personal Workspace
    to SES's own Google Workspace.
 6. `clearNotifiedTrackingForTesting_()` / `testClearNotifiedTracking()` in
-   Code.gs are TESTING ONLY — wipe both "notified" tracking sheets so a test
+   Tests.gs are TESTING ONLY — wipe both "notified" tracking sheets so a test
    run re-flags everything. Never call from a trigger or in production.
 
 ## Syncing with Apps Script (clasp)
 
 `.clasp.json` (committed — the script ID is not a secret) points at the live
-project; `.claspignore` whitelists only `Code.gs`, `PhaseTrial.gs` and
+project; `.claspignore` whitelists only `*.gs` and
 `appsscript.json`. `clasp push` REPLACES the whole Apps Script project with
 those files, so this repo must be the source of truth — never edit in the
 web editor without pulling the change back here.

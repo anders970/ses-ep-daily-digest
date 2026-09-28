@@ -1,31 +1,22 @@
 // ==========================================================================
-// PHASE-LEVEL ALERT TRIAL
+// PHASE-LEVEL ALERT TRIAL (A/B test)
 //
-// Compares against the current live daily-urgent design in Code.gs. Reuses
-// Code.gs's data fetch (buildNightlyData_ calls buildPhaseRowsForProject_ below
-// while it already has each project's tasks + hours in hand), snapshots,
-// findHoursExceededTasks_, findProfitabilityDrops_, etc., and adds
-// one new thing: rolling up hours at the PHASE level (a project's top-level
-// "level 1" parent tasks) instead of only the individual-task level.
-//
-// Sends a second, separately-labeled email ("[Trial: +Phases] ...") alongside
-// the existing "[Current] ..." email so results can be compared side by side
-// during the trial. Once the trial is validated, this file's logic can be
-// merged into Code.gs and this file deleted.
+// Rolls hours up to each project's top-level "phase" tasks and sends a second,
+// separately-labeled "[Trial: +Phases]" email next to the "[Current]" one so
+// the two designs can be compared. Phase rows are built during the nightly
+// build (buildNightlyData_ calls buildPhaseRowsForProject_). Once the trial is
+// decided, fold the winner into DailyAlerts.gs and delete this file.
 // ==========================================================================
 
+
+// ====== THRESHOLDS ======
+
 const PHASE_THRESHOLD_PERCENT = 66;
+
 const MIN_PHASE_ESTIMATED_HOURS = 20;
 
 
-// Leaf tasks only, excluding Closed — closed work shouldn't count toward a
-// phase's "in-progress" hours-used percentage.
-function getAllLeafTasksFromAll_(allTasks) {
-  return allTasks.filter(function(task) {
-    var isNotCompleted = COMPLETED_TASK_STATUS_IDS.indexOf(task.TaskStatusId) === -1;
-    return !task.HasChild && isNotCompleted;
-  });
-}
+// ====== PHASE AGGREGATION ======
 
 // Phases = top-level tasks that have children. Each open leaf task's hours roll
 // up to its top-level ancestor. (Aggregation logic taken verbatim from the live
@@ -51,7 +42,7 @@ function buildPhaseAggregates_(allTasks, hoursMap) {
     }
   });
 
-  getAllLeafTasksFromAll_(allTasks).forEach(function(task) {
+  getOpenLeafTasksFromAll_(allTasks).forEach(function(task) {
     var topId = getTopLevelAncestorId_(task.TaskId);
     if (topId != null && phases[topId]) {
       phases[topId].estimatedHours += (task.EstimatedHours || 0);
@@ -62,7 +53,7 @@ function buildPhaseAggregates_(allTasks, hoursMap) {
   return Object.keys(phases).map(function(id) { return phases[id]; });
 }
 
-// One row per phase for a single project. Called from Code.gs's buildNightlyData_
+// One row per phase for a single project. Called from buildNightlyData_ (Dataset.gs)
 // with the tasks + hours it already fetched, so there's no second Birdview pass.
 function buildPhaseRowsForProject_(project, pmName, allTasks, hoursMap) {
   return buildPhaseAggregates_(allTasks, hoursMap).map(function(phase) {
@@ -80,7 +71,8 @@ function buildPhaseRowsForProject_(project, pmName, allTasks, hoursMap) {
 }
 
 
-// ====== "fire once, ever" tracking (same pattern as HoursExceededNotified) ======
+// ====== "FIRE ONCE, EVER" TRACKING (same pattern as HoursExceededNotified) ======
+
 function getPhaseThresholdNotifiedSheet_() {
   return getLedgerSpreadsheet_().getSheetByName('PhaseThresholdNotified');
 }
@@ -111,25 +103,12 @@ function findPhasesOverThreshold_(phaseRows) {
 }
 
 
-// ====== EMAIL: DAILY URGENT ALERT, TRIAL VARIANT (adds phase section) ======
+// ====== EMAIL ======
+
 function buildDailyUrgentEmailHtmlWithPhases_(pmName, hoursExceededRows, phasesOverThreshold, profitDrops) {
   var html = '<p>Hi ' + pmName + ',</p><p>Here are today\'s urgent project alerts (TRIAL — includes phase-level alerts):</p>';
 
-  if (hoursExceededRows.length > 0) {
-    html += '<h3>&#9200; Tasks that have exceeded their estimated hours</h3><ul>';
-    var byProject = groupRowsByProject_(hoursExceededRows);
-    Object.keys(byProject).forEach(function(projectId) {
-      var group = byProject[projectId];
-      html += '<li><strong>' + group.projectName + '</strong><ul>';
-      group.tasks.forEach(function(row) {
-        html += '<li><a href="' + row.TaskUrl + '">' + row.ParentBreadcrumb + ' / ' + row.TaskName + '</a> (A: ' +
-          row.ActualHours.toFixed(1) + ' h / E: ' + row.EstimatedHours.toFixed(1) + ' h)</li>';
-      });
-      html += '</ul></li>';
-    });
-    html += '</ul>';
-  }
-
+  html += buildHoursExceededSectionHtml_(hoursExceededRows);
   if (phasesOverThreshold.length > 0) {
     html += '<h3>&#128202; Project phases nearing/over ' + PHASE_THRESHOLD_PERCENT + '% of estimated hours</h3><ul>';
     phasesOverThreshold.forEach(function(phase) {
@@ -140,21 +119,14 @@ function buildDailyUrgentEmailHtmlWithPhases_(pmName, hoursExceededRows, phasesO
     html += '</ul>';
   }
 
-  if (profitDrops.length > 0) {
-    html += '<h3>&#128201; Projects with a drop in expected profit</h3><ul>';
-    profitDrops.forEach(function(drop) {
-      html += '<li><a href="' + buildProjectUrl_(drop.projectId) + '">' + drop.projectName + '</a> (' +
-        drop.yesterdayPercent.toFixed(1) + '% &rarr; ' + drop.todayPercent.toFixed(1) + '%)</li>';
-    });
-    html += '</ul>';
-  }
-
+  html += buildProfitDropsSectionHtml_(profitDrops);
   html += '<p style="color:#888;font-size:12px;">Automated TRIAL alert — comparing against the current live design.</p>';
   return html;
 }
 
 
-// ====== ORCHESTRATION: runs BOTH the current design and the phase trial, side by side ======
+// ====== ORCHESTRATION (stage 2 — sends BOTH emails) ======
+
 // Stage 2 (runNightlyAlerts): reads the snapshots runNightlyDigest saved earlier
 // tonight — no Birdview fetching here.
 function runDailyUrgentComparison() {
@@ -199,8 +171,4 @@ function runDailyUrgentComparison() {
 
   markTasksAsNotified_(notifiedTaskIds);
   markPhasesAsNotified_(notifiedPhaseIds);
-}
-
-function testDailyUrgentComparison() {
-  runDailyUrgentComparison();
 }
