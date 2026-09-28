@@ -1,0 +1,5 @@
+# Only push the Apps Script source + manifest — never CLAUDE.md, .git, etc.
+**/**
+!Code.gs
+!PhaseTrial.gs
+!appsscript.json

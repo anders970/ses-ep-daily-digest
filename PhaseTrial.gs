@@ -1,9 +1,10 @@
 // ==========================================================================
 // PHASE-LEVEL ALERT TRIAL
 //
-// Compares against the current live daily-urgent design in Code.gs without
-// touching it. Reuses Code.gs's data fetch (buildDailyDigestDataset,
-// findHoursExceededTasks_, findProfitabilityDrops_, snapshots, etc.) and adds
+// Compares against the current live daily-urgent design in Code.gs. Reuses
+// Code.gs's data fetch (buildNightlyData_ calls buildPhaseRowsForProject_ below
+// while it already has each project's tasks + hours in hand), snapshots,
+// findHoursExceededTasks_, findProfitabilityDrops_, etc., and adds
 // one new thing: rolling up hours at the PHASE level (a project's top-level
 // "level 1" parent tasks) instead of only the individual-task level.
 //
@@ -61,37 +62,23 @@ function getPhaseUrl_(phaseTaskId) {
   return buildTaskUrl_(phaseTaskId); // phases are just tasks, so they share the task URL format
 }
 
-// One row per phase per project.
-function buildPhaseDataset_() {
-  var projects = getOpenFlatFeeProjects_();
-  var pmLookup = getSesPmLookup_();
-  var rows = [];
-
-  projects.forEach(function(project) {
-    var projectId = project.ProjectId;
-    var pmId = project.CustomFields ? project.CustomFields[CUSTOM_FIELD_SES_PM] : null;
-    var pmName = pmLookup[pmId] || 'Unassigned';
-
-    var allTasks = getAllTasksForProject_(projectId);
-    var hoursMap = getActualHoursByTaskForProject_(projectId);
-    var phaseMap = buildPhaseAggregates_(allTasks, hoursMap);
-
-    Object.keys(phaseMap).forEach(function(phaseTaskId) {
-      var phase = phaseMap[phaseTaskId];
-      rows.push({
-        ProjectId: projectId,
-        ProjectName: project.Name,
-        SES_PM: pmName,
-        PhaseTaskId: Number(phaseTaskId),
-        PhaseName: phase.phaseTask.Name,
-        PhaseUrl: getPhaseUrl_(phaseTaskId),
-        EstimatedHours: phase.estimatedHours,
-        ActualHours: phase.actualHours
-      });
-    });
+// One row per phase for a single project. Called from Code.gs's buildNightlyData_
+// with the tasks + hours it already fetched, so there's no second Birdview pass.
+function buildPhaseRowsForProject_(project, pmName, allTasks, hoursMap) {
+  var phaseMap = buildPhaseAggregates_(allTasks, hoursMap);
+  return Object.keys(phaseMap).map(function(phaseTaskId) {
+    var phase = phaseMap[phaseTaskId];
+    return {
+      ProjectId: project.ProjectId,
+      ProjectName: project.Name,
+      SES_PM: pmName,
+      PhaseTaskId: Number(phaseTaskId),
+      PhaseName: phase.phaseTask.Name,
+      PhaseUrl: getPhaseUrl_(phaseTaskId),
+      EstimatedHours: phase.estimatedHours,
+      ActualHours: phase.actualHours
+    };
   });
-
-  return rows;
 }
 
 
@@ -170,15 +157,18 @@ function buildDailyUrgentEmailHtmlWithPhases_(pmName, hoursExceededRows, phasesO
 
 
 // ====== ORCHESTRATION: runs BOTH the current design and the phase trial, side by side ======
+// Stage 2 (runNightlyAlerts): reads the snapshots runNightlyDigest saved earlier
+// tonight — no Birdview fetching here.
 function runDailyUrgentComparison() {
-  var todayRows = buildDailyDigestDataset();
-  saveTodaysSnapshot_(todayRows);
+  var todayRows = requireTodaysSnapshot_(TASK_SNAPSHOT_PREFIX, 'runNightlyAlerts');
+  if (!todayRows) return;
+  var phaseRows = requireTodaysSnapshot_(PHASE_SNAPSHOT_PREFIX, 'runNightlyAlerts');
+  if (!phaseRows) return;
 
   var previousRows = getMostRecentPastSnapshot_() || [];
   var hoursExceeded = findHoursExceededTasks_(todayRows);
   var profitDrops = findProfitabilityDrops_(todayRows, previousRows);
 
-  var phaseRows = buildPhaseDataset_();
   var phasesOverThreshold = findPhasesOverThreshold_(phaseRows);
 
   var pmSet = {};
@@ -190,6 +180,7 @@ function runDailyUrgentComparison() {
   var notifiedPhaseIds = [];
 
   Object.keys(pmSet).forEach(function(pmName) {
+    if (!getPmEmail_(pmName)) return; // not in the trial yet — don't mark their tasks/phases as notified
     var pmHoursExceeded = hoursExceeded.filter(function(row) { return row.SES_PM === pmName; });
     var pmProfitDrops = profitDrops.filter(function(d) { return d.pm === pmName; });
     var pmPhases = phasesOverThreshold.filter(function(p) { return p.SES_PM === pmName; });
@@ -210,7 +201,6 @@ function runDailyUrgentComparison() {
 
   markTasksAsNotified_(notifiedTaskIds);
   markPhasesAsNotified_(notifiedPhaseIds);
-  cleanUpOldSnapshots_();
 }
 
 function testDailyUrgentComparison() {

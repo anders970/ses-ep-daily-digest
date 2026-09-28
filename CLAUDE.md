@@ -20,9 +20,8 @@ Anders is in `PM_EMAIL_MAP` right now — see "Next steps" below for the
 rollout plan to all 13 PMs.
 
 This project was originally built interactively directly in the Apps Script
-web editor; it's now being managed here so it can be edited with Claude Code.
-**There is no Apps Script CLI (clasp) wired up yet** — see "Syncing with
-Apps Script" below for how changes currently need to be copy-pasted back in.
+web editor; it's now managed here and synced to Apps Script with `clasp`
+(see "Syncing with Apps Script" below).
 
 ## File layout
 
@@ -33,10 +32,12 @@ Apps Script" below for how changes currently need to be copy-pasted back in.
 - `PhaseTrial.gs` — an A/B test living alongside `Code.gs` without touching
   it. Adds a "phase-level" alert (rolls hours up to a project's top-level
   parent tasks) and sends it as a second, separately-labeled email so the
-  two designs can be compared side by side. `runNightlyDigest()` in
-  `Code.gs` calls `runDailyUrgentComparison()` from this file (NOT
-  `runDailyUrgentCheck()` directly), so both emails go out every night
-  during the trial.
+  two designs can be compared side by side. The `runNightlyAlerts` trigger
+  calls `runDailyUrgentComparison()` from this file (NOT
+  `runDailyUrgentCheck()`), so both emails go out every night during the
+  trial. Phase rows are computed inside `Code.gs`'s single-pass
+  `buildNightlyData_()` via `buildPhaseRowsForProject_()` and saved as their
+  own snapshot file.
 - `appsscript.json` — manifest. Declares the `OAuth2` library dependency
   (Apps Script "OAuth2 for Apps Script" library) used for the Birdview
   Authorization Code Grant flow.
@@ -64,10 +65,25 @@ Script editor — never commit these anywhere):
    matters).
 2. `backfillProfitabilityLedger()` — seeds `LockedTotals`/`TimeLogDetail`
    for all currently-open Flat Fee projects.
-3. `setupTriggers()` — installs the nightly + weekly time-based triggers.
+3. `setupTriggers()` — installs the three time-based triggers. Re-run it
+   whenever the trigger schedule in code changes.
 
-**Ongoing**: `runNightlyDigest` fires daily (skips Sat/Sun); `runWeeklyDigest`
-fires Monday mornings.
+**Ongoing — staged pipeline** (each stage hands off via today's Drive
+snapshot, so no execution both builds data and sends email):
+
+| Trigger | When | Does |
+|---|---|---|
+| `runNightlyDigest` | ~2am, skips Sat/Sun | ledger update + `buildNightlyData_()` → saves `phase-snapshot-<date>.json` then `digest-snapshot-<date>.json` (task snapshot saved LAST = "build finished" marker). No email. |
+| `runNightlyAlerts` | ~4am, skips Sat/Sun | reads today's snapshots → `runDailyUrgentComparison()` ([Current] + [Trial: +Phases] emails). No Birdview calls. |
+| `runWeeklyDigest` | ~6am Mondays | reads today's task snapshot → flagging + Gemini + weekly emails. No Birdview calls, no ledger update. |
+
+Every trigger entry point runs inside `runWithErrorAlert_()`, which emails
+`ADMIN_EMAIL` the error + stack trace and re-throws (so Executions still
+shows Failed). Stages 2/3 use `requireTodaysSnapshot_()`, which emails
+`ADMIN_EMAIL` if the build stage didn't finish (this also covers a hard
+execution timeout, which can't be caught). Manual recovery: run
+`testNightlyBuild()`, then `testDailyUrgentComparison()` /
+`testWeeklyDigest()`.
 
 ## Birdview / EasyProjects API facts (hard-won, don't re-derive)
 
@@ -167,36 +183,38 @@ email side by side.
   day-over-day diffing — this guarantees exactly-once alerts even if the
   script is re-run multiple times on the same day (diffing against
   yesterday's snapshot could double-fire).
-- **Drive JSON snapshots** (`digest-snapshot-YYYY-MM-DD.json`, 14-day
-  retention) are what day-over-day (profit drops) and week-over-week
-  (weekly digest) comparisons are based on.
+- **Drive JSON snapshots** (`digest-snapshot-YYYY-MM-DD.json` task rows +
+  `phase-snapshot-YYYY-MM-DD.json` phase rows, 14-day retention) are both
+  the hand-off between pipeline stages and what day-over-day (profit drops)
+  and week-over-week (weekly digest) comparisons are based on.
+- **PMs not in `PM_EMAIL_MAP` are skipped entirely** by the alert/digest
+  senders — no Gemini call, and their tasks/phases are NOT marked in the
+  "notified" sheets (so they still fire once that PM is added at rollout).
+- **Ledger sheets are read once per run** (`readLedgerCosts_()`, passed into
+  `calculateExpectedProfitPercent_`) and the spreadsheet handle is cached
+  per execution — don't reintroduce per-project sheet reads.
 
 ## Open issues / next steps
 
-1. **[UNRESOLVED] Weekly digest email never arrived**, despite
-   `listTriggers()` confirming the trigger exists and fires. Leading
-   hypothesis: Apps Script's per-execution runtime limit (~6 minutes, even
-   for Workspace accounts) is being exceeded. Logged execution times
-   observed during testing: dataset build ~3 min, ledger update ~1.5 min —
-   and `runWeeklyDigest()` does a full dataset rebuild AFTER also calling
-   `dailyUpdateProfitabilityLedger()`, so these could combine to blow the
-   limit. A silent execution-time-limit failure does NOT throw a catchable
-   error in the way a normal exception would, so nothing currently surfaces
-   this failure — it just silently doesn't finish.
-   - **Proposed fix approach**: split the work across staged triggers,
-     handing off state via a Drive snapshot file instead of one function
-     doing everything: (a) a first trigger builds the dataset + updates the
-     ledger and saves a snapshot; (b) a second trigger (a few minutes later)
-     reads that snapshot and does the flagging + Gemini calls + email send,
-     without rebuilding anything. This also naturally solves problem #2
-     below (a watchdog can check "did today's snapshot get saved").
-   - Next action: confirm the actual quota via Apps Script's quotas docs,
-     then implement the staged-trigger split if confirmed.
-2. **No watchdog for silent trigger failures.** If a trigger execution times
-   out or throws in a way that isn't caught, nothing currently notices or
-   alerts Anders. Add a simple check (e.g., a separate daily trigger that
-   verifies today's snapshot file exists in Drive by a certain time, and
-   emails Anders if not).
+1. **[ROOT CAUSE STILL UNKNOWN] Nightly + weekly triggers failing.** The
+   Executions panel (Sep 22–28, 2026) showed EVERY weekday
+   `runNightlyDigest` and the Sep 28 `runWeeklyDigest` as **Failed after
+   8–52 s** — i.e. a thrown error early in the run, NOT the 6-minute
+   timeout originally suspected (a manual `testDailyUrgentComparison` on
+   Sep 21 completed in ~402 s). The error text wasn't captured yet.
+   - Done: staged-trigger pipeline (above), error-alert emails, missing-
+     snapshot alerts, single-pass build (phase data no longer re-fetched),
+     one ledger read per run, Gemini only for PMs with an email.
+   - Candidate cause, defensively fixed: `LockedThroughDate` read back from
+     Sheets as a `Date` object was sent to Birdview's `EntryDateFrom` as a
+     `Date.toString()` string; now normalized to ISO. The manual Sep 21 run
+     didn't include the ledger update, which fits — but unconfirmed.
+   - Next action: after deploying, read the error text (the new
+     "[Birdview Digest] … failed" email, or expand a failed row in
+     Executions) and fix the actual cause if it's something else.
+2. **Watchdog** — partly covered: stages 2/3 email Anders if today's
+   snapshot is missing. Not covered: stage 2/3 themselves timing out (they're
+   now lightweight, so unlikely), or a trigger never firing at all.
 3. **Ledger "rollover" was never built.** `dailyUpdateProfitabilityLedger()`
    currently only ever grows `TimeLogDetail` — it never folds aged-out rows
    into `LockedTotals` and advances `LockedThroughDate`. Over time the
@@ -217,13 +235,23 @@ email side by side.
    Code.gs are TESTING ONLY — wipe both "notified" tracking sheets so a test
    run re-flags everything. Never call from a trigger or in production.
 
-## Syncing with Apps Script (no clasp yet)
+## Syncing with Apps Script (clasp)
 
-Changes made here need to be manually copy-pasted into the Apps Script web
-editor's `Code.gs` / `PhaseTrial.gs` files (and `appsscript.json` via
-"Show manifest file" in Project Settings) until `clasp` is set up. Setting
-up `clasp push`/`clasp pull` is a reasonable next step once this repo is
-the source of truth.
+`.clasp.json` (committed — the script ID is not a secret) points at the live
+project; `.claspignore` whitelists only `Code.gs`, `PhaseTrial.gs` and
+`appsscript.json`. `clasp push` REPLACES the whole Apps Script project with
+those files, so this repo must be the source of truth — never edit in the
+web editor without pulling the change back here.
+
+One-time, on Anders's machine (Windows / PowerShell):
+1. Enable the Apps Script API: https://script.google.com/home/usersettings
+2. `npm install -g @google/clasp` then `clasp login` (sign in with the
+   Google account that owns the script). Credentials land in
+   `~/.clasprc.json` — never in this repo.
+
+Deploy loop: `git pull` → `clasp push` → re-run `setupTriggers()` in the
+editor if trigger schedules changed. To check for drift from the web editor:
+`clasp pull` then `git diff`.
 
 ## Secrets — hard rule
 

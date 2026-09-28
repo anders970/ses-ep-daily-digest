@@ -14,6 +14,12 @@
 //   authorize()                     — approve Birdview access
 //   backfillProfitabilityLedger()   — seed the profitability ledger
 //   setupTriggers()                 — schedule the nightly/weekly runs
+//                                     (re-run after any trigger schedule change)
+//
+// Trigger pipeline (staged so no single execution does too much):
+//   ~2am  runNightlyDigest  — ledger update + dataset build, saves today's snapshots
+//   ~4am  runNightlyAlerts  — reads today's snapshots, sends daily urgent emails
+//   ~6am Mon runWeeklyDigest — reads today's snapshot, sends weekly digests
 // ==========================================================================
 
 
@@ -30,6 +36,9 @@ const TASK_URL_BASE = 'https://ses.go.easyprojects.net/1/activities/activity/';
 const DIGEST_SNAPSHOT_FOLDER_NAME = 'Birdview Digest Snapshots';
 const SNAPSHOT_RETENTION_DAYS = 14;
 const MIN_ESTIMATED_HOURS_FOR_ALERT = 5; // daily urgent "over estimate" alert only fires for tasks with more than this many estimated hours
+const TASK_SNAPSHOT_PREFIX = 'digest-snapshot-';
+const PHASE_SNAPSHOT_PREFIX = 'phase-snapshot-'; // phase rows for PhaseTrial.gs, saved alongside the task snapshot
+const ADMIN_EMAIL = 'anders@theworks.pro'; // receives pipeline failure / missing-snapshot alerts
 
 const PM_EMAIL_MAP = {
   'Anders': 'anders@theworks.pro' // add more PMs here as the trial expands to the full team
@@ -69,9 +78,12 @@ function resetBirdviewAuth() {
 
 
 // ====== SHEET CONNECTIONS ======
+var ledgerSpreadsheetCache_ = null; // opened once per execution
+
 function getLedgerSpreadsheet_() {
   var SHEET_URL = 'https://docs.google.com/spreadsheets/d/1_zIy-0HMHkAh2v01IzbZizEqVqoA9VSbWrUYEMxjdsA/edit?usp=sharing';
-  return SpreadsheetApp.openByUrl(SHEET_URL);
+  if (!ledgerSpreadsheetCache_) ledgerSpreadsheetCache_ = SpreadsheetApp.openByUrl(SHEET_URL);
+  return ledgerSpreadsheetCache_;
 }
 function getTimeLogDetailSheet_() { return getLedgerSpreadsheet_().getSheetByName('TimeLogDetail'); }
 function getLockedTotalsSheet_() { return getLedgerSpreadsheet_().getSheetByName('LockedTotals'); }
@@ -86,16 +98,6 @@ function writeRows_(sheet, rows) {
   if (rows.length > 0) {
     sheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
   }
-}
-
-// Small helper: pulls all rows for a given project from a detail sheet.
-function getDataRowsForProject_(sheet, projectId) {
-  var data = sheet.getDataRange().getValues();
-  var rows = [];
-  for (var i = 1; i < data.length; i++) {
-    if (data[i][1] === projectId) rows.push(data[i]);
-  }
-  return rows;
 }
 
 
@@ -273,6 +275,22 @@ function readLockedTotalsMap_() {
   return map;
 }
 
+// Sums TimeLogDetail.Cost per project in a single sheet read.
+function readRecentLaborCostByProject_() {
+  var data = getTimeLogDetailSheet_().getDataRange().getValues();
+  var map = {};
+  for (var i = 1; i < data.length; i++) {
+    map[data[i][1]] = (map[data[i][1]] || 0) + (Number(data[i][2]) || 0);
+  }
+  return map;
+}
+
+// Both ledger sheets, read once — pass the result into calculateExpectedProfitPercent_
+// instead of re-reading the sheets for every project.
+function readLedgerCosts_() {
+  return { lockedMap: readLockedTotalsMap_(), recentCostByProject: readRecentLaborCostByProject_() };
+}
+
 // Run once on a fresh setup.
 function backfillProfitabilityLedger() {
   var cutoff = new Date();
@@ -321,6 +339,8 @@ function dailyUpdateProfitabilityLedger() {
     var existing = lockedMap[projectId];
     var lockedLaborCost = existing ? existing.lockedLaborCost : 0;
     var sinceDate = existing ? existing.lockedThroughDate : project.CreationDate;
+    // Sheets may hand back a Date object here; send Birdview an ISO string, not Date.toString().
+    if (sinceDate instanceof Date) sinceDate = sinceDate.toISOString();
 
     var timeLogs = birdviewGetAllPages_('/api/v2/timelogs', { ProjectIds: projectId, Billable: true, EntryDateFrom: sinceDate });
     timeLogs.forEach(function(log) {
@@ -341,11 +361,12 @@ function dailyUpdateProfitabilityLedger() {
 //   EAC cost     = actual labor cost + ETC labor cost + ALL planned expenses
 //   Expected Profit % = (EAC billable - EAC cost) / EAC billable * 100
 // Verified against Birdview's own displayed value on project 3656 (0.92% both sides).
-function calculateExpectedProfitPercent_(projectId, project, tasks, userRateMap) {
-  var lockedRow = readLockedTotalsMap_()[projectId];
+// ledgerCosts (from readLedgerCosts_) is optional — read fresh if omitted.
+function calculateExpectedProfitPercent_(projectId, project, tasks, userRateMap, ledgerCosts) {
+  ledgerCosts = ledgerCosts || readLedgerCosts_();
+  var lockedRow = ledgerCosts.lockedMap[projectId];
   var lockedLaborCost = lockedRow ? lockedRow.lockedLaborCost : 0;
-  var recentLaborCost = getDataRowsForProject_(getTimeLogDetailSheet_(), projectId)
-    .reduce(function(sum, row) { return sum + row[2]; }, 0);
+  var recentLaborCost = ledgerCosts.recentCostByProject[projectId] || 0;
   var actualLaborCost = lockedLaborCost + recentLaborCost;
 
   var taskIds = tasks.map(function(t) { return t.TaskId; });
@@ -370,11 +391,15 @@ function calculateExpectedProfitPercent_(projectId, project, tasks, userRateMap)
 
 
 // ====== DAILY DATASET ASSEMBLY (the core output — one row per open task) ======
-function buildDailyDigestDataset() {
+// Single pass over all projects producing both the task rows and PhaseTrial.gs's
+// phase rows, so each project's tasks/time logs are only fetched once per night.
+function buildNightlyData_() {
   var projects = getOpenFlatFeeProjects_();
   var pmLookup = getSesPmLookup_();
   var userRateMap = getAllUserRates_();
+  var ledgerCosts = readLedgerCosts_();
   var rows = [];
+  var phaseRows = [];
 
   projects.forEach(function(project) {
     var projectId = project.ProjectId;
@@ -386,7 +411,7 @@ function buildDailyDigestDataset() {
     var tasks = getOpenLeafTasksFromAll_(allTasks);
 
     var hoursMap = getActualHoursByTaskForProject_(projectId);
-    var profitData = calculateExpectedProfitPercent_(projectId, project, tasks, userRateMap);
+    var profitData = calculateExpectedProfitPercent_(projectId, project, tasks, userRateMap, ledgerCosts);
 
     tasks.forEach(function(task) {
       var actualHours = hoursMap[task.TaskId] || 0;
@@ -408,10 +433,16 @@ function buildDailyDigestDataset() {
         Flags: buildTaskFlags_(task, actualHours).join(', ')
       });
     });
+
+    phaseRows = phaseRows.concat(buildPhaseRowsForProject_(project, pmName, allTasks, hoursMap)); // PhaseTrial.gs
   });
 
-  Logger.log('Built ' + rows.length + ' task rows across ' + projects.length + ' projects.');
-  return rows;
+  Logger.log('Built ' + rows.length + ' task rows and ' + phaseRows.length + ' phase rows across ' + projects.length + ' projects.');
+  return { taskRows: rows, phaseRows: phaseRows };
+}
+
+function buildDailyDigestDataset() {
+  return buildNightlyData_().taskRows;
 }
 
 
@@ -425,15 +456,43 @@ function formatDateForFilename_(date) {
   return Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd');
 }
 
-function saveTodaysSnapshot_(rows) {
+function todaysSnapshotFilename_(prefix) {
+  return prefix + formatDateForFilename_(new Date()) + '.json';
+}
+
+function saveTodaysSnapshotFile_(prefix, data) {
   var folder = getSnapshotFolder_();
-  var filename = 'digest-snapshot-' + formatDateForFilename_(new Date()) + '.json';
+  var filename = todaysSnapshotFilename_(prefix);
 
   var existing = folder.getFilesByName(filename);
   if (existing.hasNext()) existing.next().setTrashed(true);
 
-  folder.createFile(filename, JSON.stringify(rows), MimeType.PLAIN_TEXT);
+  folder.createFile(filename, JSON.stringify(data), MimeType.PLAIN_TEXT);
   Logger.log('Saved snapshot: ' + filename);
+}
+
+function saveTodaysSnapshot_(rows) {
+  saveTodaysSnapshotFile_(TASK_SNAPSHOT_PREFIX, rows);
+}
+
+// Returns today's parsed snapshot, or null if it hasn't been saved (yet).
+function loadTodaysSnapshotFile_(prefix) {
+  var files = getSnapshotFolder_().getFilesByName(todaysSnapshotFilename_(prefix));
+  return files.hasNext() ? JSON.parse(files.next().getBlob().getDataAsString()) : null;
+}
+
+// Stage 2/3 guard: today's snapshot is the hand-off from runNightlyDigest. If it's
+// missing, the build stage failed or timed out — tell the admin instead of silently
+// sending nothing.
+function requireTodaysSnapshot_(prefix, callerName) {
+  var data = loadTodaysSnapshotFile_(prefix);
+  if (!data) {
+    notifyAdmin_('[Birdview Digest] ' + callerName + ' skipped — no snapshot for today',
+      callerName + ' could not find ' + todaysSnapshotFilename_(prefix) + ' in the "' + DIGEST_SNAPSHOT_FOLDER_NAME + '" Drive folder.\n\n' +
+      'That means today\'s runNightlyDigest (ledger update + dataset build) did not finish — check the Apps Script Executions panel. ' +
+      'No emails were sent by ' + callerName + '. To recover manually, run testNightlyBuild() and then re-run ' + callerName + '().');
+  }
+  return data;
 }
 
 function getMostRecentPastSnapshot_() {
@@ -490,7 +549,9 @@ function cleanUpOldSnapshots_() {
 
   while (files.hasNext()) {
     var file = files.next();
-    if (file.getName().indexOf('digest-snapshot-') === 0 && file.getDateCreated() < cutoff) {
+    var name = file.getName();
+    var isSnapshot = name.indexOf(TASK_SNAPSHOT_PREFIX) === 0 || name.indexOf(PHASE_SNAPSHOT_PREFIX) === 0;
+    if (isSnapshot && file.getDateCreated() < cutoff) {
       file.setTrashed(true);
       Logger.log('Deleted old snapshot: ' + file.getName());
     }
@@ -562,6 +623,27 @@ function findHoursExceededTasks_(todayRows) {
 
 
 // ====== EMAIL HELPERS ======
+function notifyAdmin_(subject, body) {
+  try {
+    GmailApp.sendEmail(ADMIN_EMAIL, subject, body);
+    Logger.log('Admin alert sent: ' + subject);
+  } catch (mailError) {
+    Logger.log('Could not send admin alert "' + subject + '": ' + mailError);
+  }
+}
+
+// Wraps a trigger entry point so any thrown error is emailed to the admin, then
+// re-thrown so the Executions panel still shows it as Failed. (A hard execution
+// timeout can't be caught here — requireTodaysSnapshot_ covers that case.)
+function runWithErrorAlert_(name, fn) {
+  try {
+    fn();
+  } catch (e) {
+    notifyAdmin_('[Birdview Digest] ' + name + ' failed', name + ' threw an error:\n\n' + (e && e.stack ? e.stack : e));
+    throw e;
+  }
+}
+
 function groupRowsByProject_(rows) {
   var map = {};
   rows.forEach(function(row) {
@@ -630,6 +712,7 @@ function runDailyUrgentCheck() {
   var notifiedTaskIds = [];
 
   Object.keys(pmSet).forEach(function(pmName) {
+    if (!getPmEmail_(pmName)) return; // not in the trial yet — don't mark their tasks as notified
     var pmHoursExceeded = hoursExceeded.filter(function(row) { return row.SES_PM === pmName; });
     var pmProfitDrops = profitDrops.filter(function(d) { return d.pm === pmName; });
     if (pmHoursExceeded.length === 0 && pmProfitDrops.length === 0) return;
@@ -758,10 +841,15 @@ function buildWeeklyDigestEmailHtml_(pmName, individualTasks, taskExplanationMap
   return html;
 }
 
+// Stage 3 (Mondays): reads the snapshot runNightlyDigest saved earlier this morning —
+// no ledger update or dataset rebuild here.
 function runWeeklyDigest() {
-  dailyUpdateProfitabilityLedger();
-  var todayRows = buildDailyDigestDataset();
-  saveTodaysSnapshot_(todayRows);
+  runWithErrorAlert_('runWeeklyDigest', sendWeeklyDigestFromSnapshot_);
+}
+
+function sendWeeklyDigestFromSnapshot_() {
+  var todayRows = requireTodaysSnapshot_(TASK_SNAPSHOT_PREFIX, 'runWeeklyDigest');
+  if (!todayRows) return;
 
   var weekAgoRows = getSnapshotFromApproxDaysAgo_(7, 2) || [];
   var flaggedToday = todayRows.filter(function(r) { return r.Flags && r.Flags.length > 0; });
@@ -770,6 +858,10 @@ function runWeeklyDigest() {
   todayRows.forEach(function(row) { pmNames[row.SES_PM] = true; });
 
   Object.keys(pmNames).forEach(function(pmName) {
+    if (!getPmEmail_(pmName)) {
+      Logger.log('No email mapped for PM "' + pmName + '" — skipping (no Gemini call).');
+      return;
+    }
     var pmFlaggedRows = flaggedToday.filter(function(r) { return r.SES_PM === pmName; });
     var groups = buildWeeklyTaskGroups_(pmFlaggedRows);
     var profitSummary = buildWeeklyProfitabilitySummary_(pmName, todayRows, weekAgoRows);
@@ -783,8 +875,6 @@ function runWeeklyDigest() {
     var emailBody = buildWeeklyDigestEmailHtml_(pmName, groups.individualTasks, explanationMap, groups.summarizedProjects, profitSummary);
     sendDigestEmail_(pmName, 'Weekly Project Digest - Week of ' + formatDateForFilename_(new Date()), emailBody);
   });
-
-  cleanUpOldSnapshots_();
 }
 
 
@@ -794,21 +884,39 @@ function isWeekend_() {
   return day === 0 || day === 6;
 }
 
-// Fires nightly. Skips Sat/Sun — Monday's run naturally covers the gap since
+// Stage 1 — fires nightly (~2am). Builds everything and saves today's snapshots;
+// sends no email. Skips Sat/Sun — Monday's run naturally covers the gap since
 // the ledger watermark and snapshot comparisons just look at "since last time".
 function runNightlyDigest() {
   if (isWeekend_()) {
     Logger.log('Weekend — skipping. Monday\'s run will automatically cover everything since Friday.');
     return;
   }
+  runWithErrorAlert_('runNightlyDigest', runNightlyBuild_);
+}
+
+function runNightlyBuild_() {
   dailyUpdateProfitabilityLedger();
-  runDailyUrgentComparison(); // lives in PhaseTrial.gs — sends [Current] + [Trial: +Phases] emails
+  var data = buildNightlyData_();
+  saveTodaysSnapshotFile_(PHASE_SNAPSHOT_PREFIX, data.phaseRows);
+  saveTodaysSnapshot_(data.taskRows); // saved last — its presence means the whole build finished
+  cleanUpOldSnapshots_();
+}
+
+// Stage 2 — fires nightly (~4am), after the build. Reads today's snapshots and
+// sends the [Current] + [Trial: +Phases] urgent emails (PhaseTrial.gs).
+function runNightlyAlerts() {
+  if (isWeekend_()) {
+    Logger.log('Weekend — skipping.');
+    return;
+  }
+  runWithErrorAlert_('runNightlyAlerts', runDailyUrgentComparison);
 }
 
 function setupTriggers() {
+  var handlers = ['runNightlyDigest', 'runNightlyAlerts', 'runWeeklyDigest'];
   ScriptApp.getProjectTriggers().forEach(function(trigger) {
-    var handler = trigger.getHandlerFunction();
-    if (handler === 'runNightlyDigest' || handler === 'runWeeklyDigest') {
+    if (handlers.indexOf(trigger.getHandlerFunction()) !== -1) {
       ScriptApp.deleteTrigger(trigger);
     }
   });
@@ -817,6 +925,13 @@ function setupTriggers() {
     .timeBased()
     .everyDays(1)
     .atHour(2)
+    .create();
+
+  // atHour fires somewhere within that hour, so leave a full hour after the build.
+  ScriptApp.newTrigger('runNightlyAlerts')
+    .timeBased()
+    .everyDays(1)
+    .atHour(4)
     .create();
 
   ScriptApp.newTrigger('runWeeklyDigest')
@@ -836,12 +951,18 @@ function listTriggers() {
 
 
 // ====== TEST / VERIFICATION TOOLS ======
+// Stage 1 by hand (ignores the weekend skip). Run this first, then
+// testDailyUrgentComparison() / testWeeklyDigest(), which read its snapshots.
+function testNightlyBuild() {
+  runNightlyBuild_();
+}
+
 function testDailyUrgentCheck() {
   runDailyUrgentCheck();
 }
 
 function testWeeklyDigest() {
-  runWeeklyDigest();
+  sendWeeklyDigestFromSnapshot_();
 }
 
 function testBuildDatasetSmall() {
