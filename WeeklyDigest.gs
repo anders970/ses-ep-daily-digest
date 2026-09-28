@@ -75,9 +75,18 @@ function buildWeeklyProfitabilitySummary_(pmName, todayRows, weekAgoRows) {
   return summary;
 }
 
+// Birdview EndDate as YYYY-MM-DD, or '' if the task has none. Takes the date
+// part of the string as-is rather than converting through Date, so a
+// midnight-UTC timestamp can't shift to the previous day in Vancouver time.
+function formatTaskEndDate_(endDate) {
+  if (!endDate) return '';
+  var match = String(endDate).match(/^\d{4}-\d{2}-\d{2}/);
+  return match ? match[0] : formatDateForFilename_(new Date(endDate));
+}
+
 // One task-list section:
 //   Project Name (link)
-//   └ Task Name (link)
+//   └ Task Name (link) (YYYY-MM-DD end date, if set)
 //   └ (X more tasks)
 // Projects are listed alphabetically; tasks keep the order they were passed in.
 function buildWeeklyTaskSectionHtml_(title, rows) {
@@ -92,7 +101,9 @@ function buildWeeklyTaskSectionHtml_(title, rows) {
       html += '<div style="margin-top:8px;"><a href="' + buildProjectUrl_(projectId) + '"><strong>' +
         escapeHtml_(group.projectName) + '</strong></a></div>';
       group.tasks.slice(0, WEEKLY_MAX_TASKS_PER_PROJECT).forEach(function(row) {
-        html += '<div style="margin-left:12px;">&#9492; <a href="' + row.TaskUrl + '">' + escapeHtml_(row.TaskName) + '</a></div>';
+        var endDate = formatTaskEndDate_(row.EndDate);
+        html += '<div style="margin-left:12px;">&#9492; <a href="' + row.TaskUrl + '">' + escapeHtml_(row.TaskName) + '</a>' +
+          (endDate ? ' (' + endDate + ')' : '') + '</div>';
       });
       var hidden = group.tasks.length - WEEKLY_MAX_TASKS_PER_PROJECT;
       if (hidden > 0) {

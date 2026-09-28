@@ -173,8 +173,8 @@ each grouped by project (projects alphabetical):
 Format per project:
 ```
 Project Name        (link to EP project)
-└ Task Name         (link to EP task)
-└ Task Name
+└ Task Name (YYYY-MM-DD)   (link to EP task; end date in brackets, omitted if none)
+└ Task Name (YYYY-MM-DD)
 └ (X more tasks)    (when a project has > WEEKLY_MAX_TASKS_PER_PROJECT (2))
 ```
 The other flags (`YELLOW_LOW_HOURS`, `DUE_SOON`, `OVER_ESTIMATE`) are still
