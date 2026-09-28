@@ -1,24 +1,10 @@
-// ==========================================================================
-// PHASE-LEVEL ALERT TRIAL
-//
-// Compares against the current live daily-urgent design in Code.gs without
-// touching it. Reuses Code.gs's data fetch (buildDailyDigestDataset,
-// findHoursExceededTasks_, findProfitabilityDrops_, snapshots, etc.) and adds
-// one new thing: rolling up hours at the PHASE level (a project's top-level
-// "level 1" parent tasks) instead of only the individual-task level.
-//
-// Sends a second, separately-labeled email ("[Trial: +Phases] ...") alongside
-// the existing "[Current] ..." email so results can be compared side by side
-// during the trial. Once the trial is validated, this file's logic can be
-// merged into Code.gs and this file deleted.
-// ==========================================================================
+// ====== PHASE-LEVEL ALERT TRIAL ======
+// Compares against the current live daily-urgent design (see runNightlyDigest in Code.gs).
+// Sends a second, separately-labeled email so results can be compared side by side.
 
 const PHASE_THRESHOLD_PERCENT = 66;
 const MIN_PHASE_ESTIMATED_HOURS = 20;
 
-
-// Leaf tasks only, excluding Closed — closed work shouldn't count toward a
-// phase's "in-progress" hours-used percentage.
 function getAllLeafTasksFromAll_(allTasks) {
   return allTasks.filter(function(task) {
     var isNotCompleted = COMPLETED_TASK_STATUS_IDS.indexOf(task.TaskStatusId) === -1;
@@ -26,42 +12,38 @@ function getAllLeafTasksFromAll_(allTasks) {
   });
 }
 
-// Walks each leaf task up its ParentId chain to find its top-level ("phase")
-// ancestor, then sums estimated/actual hours per phase.
 function buildPhaseAggregates_(allTasks, hoursMap) {
-  var taskLookup = {};
-  allTasks.forEach(function(t) { taskLookup[t.TaskId] = t; });
+  var taskById = {};
+  allTasks.forEach(function(t) { taskById[t.TaskId] = t; });
 
-  function findTopLevelAncestor(task) {
-    var current = task;
-    while (current.ParentId && taskLookup[current.ParentId]) {
-      current = taskLookup[current.ParentId];
+  function getTopLevelAncestorId_(taskId) {
+    var current = taskById[taskId];
+    while (current && current.ParentId) {
+      var parent = taskById[current.ParentId];
+      if (!parent) break;
+      current = parent;
     }
-    return current;
+    return current ? current.TaskId : null;
   }
 
-  var leafTasks = getAllLeafTasksFromAll_(allTasks);
-  var phaseMap = {}; // phaseTaskId -> { phaseTask, estimatedHours, actualHours }
-
-  leafTasks.forEach(function(task) {
-    var phaseTask = findTopLevelAncestor(task);
-    if (phaseTask.TaskId === task.TaskId) return; // task IS a top-level task, not part of a phase — skip
-
-    if (!phaseMap[phaseTask.TaskId]) {
-      phaseMap[phaseTask.TaskId] = { phaseTask: phaseTask, estimatedHours: 0, actualHours: 0 };
+  var phases = {};
+  allTasks.forEach(function(t) {
+    if (!t.ParentId && t.HasChild) {
+      phases[t.TaskId] = { taskId: t.TaskId, name: t.Name, estimatedHours: 0, actualHours: 0 };
     }
-    phaseMap[phaseTask.TaskId].estimatedHours += task.EstimatedHours || 0;
-    phaseMap[phaseTask.TaskId].actualHours += hoursMap[task.TaskId] || 0;
   });
 
-  return phaseMap;
+  getAllLeafTasksFromAll_(allTasks).forEach(function(task) {
+    var topId = getTopLevelAncestorId_(task.TaskId);
+    if (topId != null && phases[topId]) {
+      phases[topId].estimatedHours += (task.EstimatedHours || 0);
+      phases[topId].actualHours += (hoursMap[task.TaskId] || 0);
+    }
+  });
+
+  return Object.keys(phases).map(function(id) { return phases[id]; });
 }
 
-function getPhaseUrl_(phaseTaskId) {
-  return buildTaskUrl_(phaseTaskId); // phases are just tasks, so they share the task URL format
-}
-
-// One row per phase per project.
 function buildPhaseDataset_() {
   var projects = getOpenFlatFeeProjects_();
   var pmLookup = getSesPmLookup_();
@@ -74,28 +56,25 @@ function buildPhaseDataset_() {
 
     var allTasks = getAllTasksForProject_(projectId);
     var hoursMap = getActualHoursByTaskForProject_(projectId);
-    var phaseMap = buildPhaseAggregates_(allTasks, hoursMap);
 
-    Object.keys(phaseMap).forEach(function(phaseTaskId) {
-      var phase = phaseMap[phaseTaskId];
+    buildPhaseAggregates_(allTasks, hoursMap).forEach(function(phase) {
       rows.push({
         ProjectId: projectId,
         ProjectName: project.Name,
         SES_PM: pmName,
-        PhaseTaskId: Number(phaseTaskId),
-        PhaseName: phase.phaseTask.Name,
-        PhaseUrl: getPhaseUrl_(phaseTaskId),
+        PhaseTaskId: phase.taskId,
+        PhaseName: phase.name,
+        PhaseUrl: buildTaskUrl_(phase.taskId),
         EstimatedHours: phase.estimatedHours,
         ActualHours: phase.actualHours
       });
     });
   });
 
+  Logger.log('Built ' + rows.length + ' phase rows across ' + projects.length + ' projects.');
   return rows;
 }
 
-
-// ====== "fire once, ever" tracking (same pattern as HoursExceededNotified) ======
 function getPhaseThresholdNotifiedSheet_() {
   return getLedgerSpreadsheet_().getSheetByName('PhaseThresholdNotified');
 }
@@ -107,26 +86,24 @@ function getAlreadyNotifiedPhaseIds_() {
   return set;
 }
 
-function markPhasesAsNotified_(phaseTaskIds) {
-  if (phaseTaskIds.length === 0) return;
+function markPhasesAsNotified_(taskIds) {
+  if (taskIds.length === 0) return;
   var sheet = getPhaseThresholdNotifiedSheet_();
   var today = new Date().toISOString();
-  sheet.getRange(sheet.getLastRow() + 1, 1, phaseTaskIds.length, 2)
-    .setValues(phaseTaskIds.map(function(id) { return [id, today]; }));
+  sheet.getRange(sheet.getLastRow() + 1, 1, taskIds.length, 2)
+    .setValues(taskIds.map(function(id) { return [id, today]; }));
 }
 
 function findPhasesOverThreshold_(phaseRows) {
   var alreadyNotified = getAlreadyNotifiedPhaseIds_();
   return phaseRows.filter(function(phase) {
-    if (!phase.EstimatedHours || phase.EstimatedHours < MIN_PHASE_ESTIMATED_HOURS) return false;
-    var percentUsed = (phase.ActualHours / phase.EstimatedHours) * 100;
-    if (percentUsed < PHASE_THRESHOLD_PERCENT) return false;
+    if (phase.EstimatedHours < MIN_PHASE_ESTIMATED_HOURS) return false;
+    var percent = (phase.ActualHours / phase.EstimatedHours) * 100;
+    if (percent < PHASE_THRESHOLD_PERCENT) return false;
     return !alreadyNotified[phase.PhaseTaskId];
   });
 }
 
-
-// ====== EMAIL: DAILY URGENT ALERT, TRIAL VARIANT (adds phase section) ======
 function buildDailyUrgentEmailHtmlWithPhases_(pmName, hoursExceededRows, phasesOverThreshold, profitDrops) {
   var html = '<p>Hi ' + pmName + ',</p><p>Here are today\'s urgent project alerts (TRIAL — includes phase-level alerts):</p>';
 
@@ -149,7 +126,7 @@ function buildDailyUrgentEmailHtmlWithPhases_(pmName, hoursExceededRows, phasesO
     html += '<h3>&#128202; Project phases nearing/over ' + PHASE_THRESHOLD_PERCENT + '% of estimated hours</h3><ul>';
     phasesOverThreshold.forEach(function(phase) {
       var percent = (phase.ActualHours / phase.EstimatedHours) * 100;
-      html += '<li><a href="' + phase.PhaseUrl + '">' + phase.ProjectName + ' — ' + phase.PhaseName + '</a> - ' +
+      html += '<li><a href="' + phase.PhaseUrl + '">' + phase.ProjectName + ' \u2014 ' + phase.PhaseName + '</a> - ' +
         percent.toFixed(0) + '% (' + phase.ActualHours.toFixed(1) + ' / ' + phase.EstimatedHours.toFixed(1) + ') of hours used.</li>';
     });
     html += '</ul>';
@@ -168,8 +145,6 @@ function buildDailyUrgentEmailHtmlWithPhases_(pmName, hoursExceededRows, phasesO
   return html;
 }
 
-
-// ====== ORCHESTRATION: runs BOTH the current design and the phase trial, side by side ======
 function runDailyUrgentComparison() {
   var todayRows = buildDailyDigestDataset();
   saveTodaysSnapshot_(todayRows);
@@ -177,7 +152,6 @@ function runDailyUrgentComparison() {
   var previousRows = getMostRecentPastSnapshot_() || [];
   var hoursExceeded = findHoursExceededTasks_(todayRows);
   var profitDrops = findProfitabilityDrops_(todayRows, previousRows);
-
   var phaseRows = buildPhaseDataset_();
   var phasesOverThreshold = findPhasesOverThreshold_(phaseRows);
 

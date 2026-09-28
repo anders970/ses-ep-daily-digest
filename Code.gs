@@ -8,12 +8,10 @@
 //   TimeLogDetail          — TimeEntryId | ProjectId | Cost | LastModificationDate
 //   LockedTotals           — ProjectId | LockedLaborCost | LockedThroughDate
 //   HoursExceededNotified  — TaskId | NotifiedDate
-//   PhaseThresholdNotified — TaskId | NotifiedDate   (used by PhaseTrial.gs)
 //
 // One-time manual runs needed on a fresh setup:
 //   authorize()                     — approve Birdview access
 //   backfillProfitabilityLedger()   — seed the profitability ledger
-//   setupTriggers()                 — schedule the nightly/weekly runs
 // ==========================================================================
 
 
@@ -29,10 +27,10 @@ const PROJECT_URL_BASE = 'https://ses.go.easyprojects.net/1/activities/project/'
 const TASK_URL_BASE = 'https://ses.go.easyprojects.net/1/activities/activity/';
 const DIGEST_SNAPSHOT_FOLDER_NAME = 'Birdview Digest Snapshots';
 const SNAPSHOT_RETENTION_DAYS = 14;
-const MIN_ESTIMATED_HOURS_FOR_ALERT = 5; // daily urgent "over estimate" alert only fires for tasks with more than this many estimated hours
+const MIN_ESTIMATED_HOURS_FOR_ALERT = 5;
 
 const PM_EMAIL_MAP = {
-  'Anders': 'anders@theworks.pro' // add more PMs here as the trial expands to the full team
+  'Anders': 'anders@theworks.pro' // add more PMs here later
 };
 
 
@@ -140,8 +138,7 @@ function birdviewGetAllPages_(path, params) {
   return allItems;
 }
 
-// Splits an array into chunks — Birdview's query engine caps list-filter size
-// (empirically confirmed safe at 15; fails somewhere between 15 and 18).
+// Splits an array into chunks — Birdview's query engine caps list-filter size.
 function chunkArray_(array, size) {
   var chunks = [];
   for (var i = 0; i < array.length; i += size) {
@@ -259,207 +256,6 @@ function buildTaskFlags_(task, actualHoursForThisTask) {
   return flags;
 }
 
-function buildTaskUrl_(taskId) { return TASK_URL_BASE + taskId; }
-function buildProjectUrl_(projectId) { return PROJECT_URL_BASE + projectId; }
-
-
-// ====== PROFITABILITY LEDGER (locked totals + recent detail) ======
-function readLockedTotalsMap_() {
-  var data = getLockedTotalsSheet_().getDataRange().getValues();
-  var map = {};
-  for (var i = 1; i < data.length; i++) {
-    map[data[i][0]] = { lockedLaborCost: data[i][1], lockedThroughDate: data[i][2] };
-  }
-  return map;
-}
-
-// Run once on a fresh setup.
-function backfillProfitabilityLedger() {
-  var cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - LOCK_BUFFER_DAYS);
-  cutoff.setHours(0, 0, 0, 0);
-
-  var projects = getOpenFlatFeeProjects_();
-  Logger.log('Backfilling ' + projects.length + ' open Flat Fee projects...');
-
-  var lockedRows = [];
-  var timeLogDetailRows = [];
-
-  projects.forEach(function(project) {
-    var projectId = project.ProjectId;
-    var timeLogs = birdviewGetAllPages_('/api/v2/timelogs', { ProjectIds: projectId, Billable: true });
-
-    var lockedLaborCost = 0;
-    timeLogs.forEach(function(log) {
-      var calculatedCost = (log.Duration || 0) * (log.InternalRate || 0);
-      if (new Date(log.EntryDate) < cutoff) {
-        lockedLaborCost += calculatedCost;
-      } else {
-        timeLogDetailRows.push([log.TimeEntryId, projectId, calculatedCost, log.LastModificationDate]);
-      }
-    });
-
-    lockedRows.push([projectId, lockedLaborCost, cutoff.toISOString()]);
-  });
-
-  writeRows_(getLockedTotalsSheet_(), lockedRows);
-  writeRows_(getTimeLogDetailSheet_(), timeLogDetailRows);
-  Logger.log('Done. ' + lockedRows.length + ' projects locked. ' + timeLogDetailRows.length + ' recent time logs staged.');
-}
-
-// Run every night (via runNightlyDigest) — refreshes the recent-detail window per project.
-// NOTE: does not roll old detail rows into LockedTotals (no rollover mechanism yet — see CLAUDE.md).
-function dailyUpdateProfitabilityLedger() {
-  var projects = getOpenFlatFeeProjects_();
-  var lockedMap = readLockedTotalsMap_();
-
-  var timeLogDetailRows = [];
-  var newLockedRows = [];
-
-  projects.forEach(function(project) {
-    var projectId = project.ProjectId;
-    var existing = lockedMap[projectId];
-    var lockedLaborCost = existing ? existing.lockedLaborCost : 0;
-    var sinceDate = existing ? existing.lockedThroughDate : project.CreationDate;
-
-    var timeLogs = birdviewGetAllPages_('/api/v2/timelogs', { ProjectIds: projectId, Billable: true, EntryDateFrom: sinceDate });
-    timeLogs.forEach(function(log) {
-      var calculatedCost = (log.Duration || 0) * (log.InternalRate || 0);
-      timeLogDetailRows.push([log.TimeEntryId, projectId, calculatedCost, log.LastModificationDate]);
-    });
-
-    newLockedRows.push([projectId, lockedLaborCost, sinceDate]);
-  });
-
-  writeRows_(getTimeLogDetailSheet_(), timeLogDetailRows);
-  writeRows_(getLockedTotalsSheet_(), newLockedRows);
-  Logger.log('Daily update complete. ' + projects.length + ' projects checked. ' + timeLogDetailRows.length + ' time logs in the active window.');
-}
-
-// Expected Profit % (Flat Fee only), reconstructed per Birdview's published formula:
-//   EAC billable = BillingAmount + planned billable expenses
-//   EAC cost     = actual labor cost + ETC labor cost + ALL planned expenses
-//   Expected Profit % = (EAC billable - EAC cost) / EAC billable * 100
-// Verified against Birdview's own displayed value on project 3656 (0.92% both sides).
-function calculateExpectedProfitPercent_(projectId, project, tasks, userRateMap) {
-  var lockedRow = readLockedTotalsMap_()[projectId];
-  var lockedLaborCost = lockedRow ? lockedRow.lockedLaborCost : 0;
-  var recentLaborCost = getDataRowsForProject_(getTimeLogDetailSheet_(), projectId)
-    .reduce(function(sum, row) { return sum + row[2]; }, 0);
-  var actualLaborCost = lockedLaborCost + recentLaborCost;
-
-  var taskIds = tasks.map(function(t) { return t.TaskId; });
-  var etcLaborCost = 0;
-  if (taskIds.length > 0) {
-    getAssigneesForTasks_(taskIds).forEach(function(a) {
-      if (!a.UserId) return;
-      etcLaborCost += (a.PersonalHoursLeft || 0) * (userRateMap[a.UserId] || 0);
-    });
-  }
-
-  var plannedExpenses = birdviewGetAllPages_('/api/v2/expenses', { ProjectId: projectId, IsPlanned: true });
-  var plannedTotal = plannedExpenses.reduce(function(sum, e) { return sum + (e.Amount || 0); }, 0);
-  var plannedBillableTotal = plannedExpenses.reduce(function(sum, e) { return sum + (e.Billable ? (e.Amount || 0) : 0); }, 0);
-
-  var eacBillable = (project.BillingAmount || 0) + plannedBillableTotal;
-  var eacCost = actualLaborCost + etcLaborCost + plannedTotal;
-  var expectedProfitPercent = eacBillable > 0 ? ((eacBillable - eacCost) / eacBillable) * 100 : null;
-
-  return { eacBillable: eacBillable, eacCost: eacCost, expectedProfitPercent: expectedProfitPercent };
-}
-
-
-// ====== DAILY DATASET ASSEMBLY (the core output — one row per open task) ======
-function buildDailyDigestDataset() {
-  var projects = getOpenFlatFeeProjects_();
-  var pmLookup = getSesPmLookup_();
-  var userRateMap = getAllUserRates_();
-  var rows = [];
-
-  projects.forEach(function(project) {
-    var projectId = project.ProjectId;
-    var pmId = project.CustomFields ? project.CustomFields[CUSTOM_FIELD_SES_PM] : null;
-    var pmName = pmLookup[pmId] || 'Unassigned';
-
-    var allTasks = getAllTasksForProject_(projectId);
-    var taskLookup = buildTaskLookup_(allTasks);
-    var tasks = getOpenLeafTasksFromAll_(allTasks);
-
-    var hoursMap = getActualHoursByTaskForProject_(projectId);
-    var profitData = calculateExpectedProfitPercent_(projectId, project, tasks, userRateMap);
-
-    tasks.forEach(function(task) {
-      var actualHours = hoursMap[task.TaskId] || 0;
-
-      rows.push({
-        ProjectId: projectId,
-        ProjectName: project.Name,
-        SES_PM: pmName,
-        ExpectedProfitPercent: profitData.expectedProfitPercent,
-        TaskId: task.TaskId,
-        TaskName: task.Name,
-        ParentBreadcrumb: buildParentBreadcrumb_(task.TaskId, taskLookup),
-        TaskUrl: buildTaskUrl_(task.TaskId),
-        EndDate: task.EndDate,
-        HoursLeft: task.HoursLeft,
-        ActualHours: actualHours,
-        EstimatedHours: task.EstimatedHours || 0,
-        TotalHours: actualHours + (task.HoursLeft || 0),
-        Flags: buildTaskFlags_(task, actualHours).join(', ')
-      });
-    });
-  });
-
-  Logger.log('Built ' + rows.length + ' task rows across ' + projects.length + ' projects.');
-  return rows;
-}
-
-
-// ====== SNAPSHOTS (Drive storage for day-over-day / week-over-week comparison) ======
-function getSnapshotFolder_() {
-  var folders = DriveApp.getFoldersByName(DIGEST_SNAPSHOT_FOLDER_NAME);
-  return folders.hasNext() ? folders.next() : DriveApp.createFolder(DIGEST_SNAPSHOT_FOLDER_NAME);
-}
-
-function formatDateForFilename_(date) {
-  return Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd');
-}
-
-function saveTodaysSnapshot_(rows) {
-  var folder = getSnapshotFolder_();
-  var filename = 'digest-snapshot-' + formatDateForFilename_(new Date()) + '.json';
-
-  var existing = folder.getFilesByName(filename);
-  if (existing.hasNext()) existing.next().setTrashed(true);
-
-  folder.createFile(filename, JSON.stringify(rows), MimeType.PLAIN_TEXT);
-  Logger.log('Saved snapshot: ' + filename);
-}
-
-function getMostRecentPastSnapshot_() {
-  var folder = getSnapshotFolder_();
-  var files = folder.getFiles();
-  var todayFilename = 'digest-snapshot-' + formatDateForFilename_(new Date()) + '.json';
-
-  var candidates = [];
-  while (files.hasNext()) {
-    var file = files.next();
-    if (file.getName() !== todayFilename && file.getName().indexOf('digest-snapshot-') === 0) {
-      candidates.push(file);
-    }
-  }
-
-  if (candidates.length === 0) {
-    Logger.log('No previous snapshot found — this must be the first run.');
-    return null;
-  }
-
-  candidates.sort(function(a, b) { return b.getName().localeCompare(a.getName()); });
-  Logger.log('Using previous snapshot: ' + candidates[0].getName());
-  return JSON.parse(candidates[0].getBlob().getDataAsString());
-}
-
-// Used by the weekly digest for week-over-week profitability comparison.
 function getSnapshotFromApproxDaysAgo_(daysAgo, toleranceDays) {
   var folder = getSnapshotFolder_();
   var files = folder.getFiles();
@@ -482,170 +278,6 @@ function getSnapshotFromApproxDaysAgo_(daysAgo, toleranceDays) {
   return JSON.parse(best.getBlob().getDataAsString());
 }
 
-function cleanUpOldSnapshots_() {
-  var folder = getSnapshotFolder_();
-  var files = folder.getFiles();
-  var cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - SNAPSHOT_RETENTION_DAYS);
-
-  while (files.hasNext()) {
-    var file = files.next();
-    if (file.getName().indexOf('digest-snapshot-') === 0 && file.getDateCreated() < cutoff) {
-      file.setTrashed(true);
-      Logger.log('Deleted old snapshot: ' + file.getName());
-    }
-  }
-}
-
-
-// ====== PROFITABILITY DROP DETECTION ======
-function getProjectProfitSnapshot_(rows) {
-  var map = {};
-  rows.forEach(function(row) {
-    if (!(row.ProjectId in map)) {
-      map[row.ProjectId] = { projectName: row.ProjectName, pm: row.SES_PM, expectedProfitPercent: row.ExpectedProfitPercent };
-    }
-  });
-  return map;
-}
-
-function findProfitabilityDrops_(todayRows, previousRows) {
-  var todayProjects = getProjectProfitSnapshot_(todayRows);
-  var previousProjects = getProjectProfitSnapshot_(previousRows);
-
-  var drops = [];
-  Object.keys(todayProjects).forEach(function(projectId) {
-    var today = todayProjects[projectId];
-    var previous = previousProjects[projectId];
-    if (!previous || today.expectedProfitPercent == null || previous.expectedProfitPercent == null) return;
-
-    var change = today.expectedProfitPercent - previous.expectedProfitPercent;
-    if (change < -PROFIT_DROP_THRESHOLD) {
-      drops.push({
-        projectId: Number(projectId),
-        projectName: today.projectName,
-        pm: today.pm,
-        yesterdayPercent: previous.expectedProfitPercent,
-        todayPercent: today.expectedProfitPercent,
-        change: change
-      });
-    }
-  });
-  return drops;
-}
-
-
-// ====== HOURS-EXCEEDED-ESTIMATE DETECTION (fires once per task, ever) ======
-function getAlreadyNotifiedTaskIds_() {
-  var data = getHoursExceededNotifiedSheet_().getDataRange().getValues();
-  var set = {};
-  for (var i = 1; i < data.length; i++) set[data[i][0]] = true;
-  return set;
-}
-
-function markTasksAsNotified_(taskIds) {
-  if (taskIds.length === 0) return;
-  var sheet = getHoursExceededNotifiedSheet_();
-  var today = new Date().toISOString();
-  sheet.getRange(sheet.getLastRow() + 1, 1, taskIds.length, 2)
-    .setValues(taskIds.map(function(id) { return [id, today]; }));
-}
-
-function findHoursExceededTasks_(todayRows) {
-  var alreadyNotified = getAlreadyNotifiedTaskIds_();
-  return todayRows.filter(function(row) {
-    if (!row.EstimatedHours || row.EstimatedHours <= MIN_ESTIMATED_HOURS_FOR_ALERT) return false;
-    if (row.ActualHours <= row.EstimatedHours) return false;
-    return !alreadyNotified[row.TaskId];
-  });
-}
-
-
-// ====== EMAIL HELPERS ======
-function groupRowsByProject_(rows) {
-  var map = {};
-  rows.forEach(function(row) {
-    if (!map[row.ProjectId]) map[row.ProjectId] = { projectName: row.ProjectName, tasks: [] };
-    map[row.ProjectId].tasks.push(row);
-  });
-  return map;
-}
-
-function sendDigestEmail_(pmName, subject, htmlBody) {
-  var email = getPmEmail_(pmName);
-  if (!email) {
-    Logger.log('No email mapped for PM "' + pmName + '" — skipping send.');
-    return;
-  }
-  GmailApp.sendEmail(email, subject, '', { htmlBody: htmlBody });
-  Logger.log('Sent email to ' + pmName + ' (' + email + '): ' + subject);
-}
-
-
-// ====== EMAIL: DAILY URGENT ALERT (current/live design) ======
-function buildDailyUrgentEmailHtml_(pmName, hoursExceededRows, profitDrops) {
-  var html = '<p>Hi ' + pmName + ',</p><p>Here are today\'s urgent project alerts:</p>';
-
-  if (hoursExceededRows.length > 0) {
-    html += '<h3>&#9200; Tasks that have exceeded their estimated hours</h3><ul>';
-    var byProject = groupRowsByProject_(hoursExceededRows);
-    Object.keys(byProject).forEach(function(projectId) {
-      var group = byProject[projectId];
-      html += '<li><strong>' + group.projectName + '</strong><ul>';
-      group.tasks.forEach(function(row) {
-        html += '<li><a href="' + row.TaskUrl + '">' + row.ParentBreadcrumb + ' / ' + row.TaskName + '</a> (A: ' +
-          row.ActualHours.toFixed(1) + ' h / E: ' + row.EstimatedHours.toFixed(1) + ' h)</li>';
-      });
-      html += '</ul></li>';
-    });
-    html += '</ul>';
-  }
-
-  if (profitDrops.length > 0) {
-    html += '<h3>&#128201; Projects with a drop in expected profit</h3><ul>';
-    profitDrops.forEach(function(drop) {
-      html += '<li><a href="' + buildProjectUrl_(drop.projectId) + '">' + drop.projectName + '</a> (' +
-        drop.yesterdayPercent.toFixed(1) + '% &rarr; ' + drop.todayPercent.toFixed(1) + '%)</li>';
-    });
-    html += '</ul>';
-  }
-
-  html += '<p style="color:#888;font-size:12px;">Automated alert from the Birdview Daily Digest trial.</p>';
-  return html;
-}
-
-// ====== ORCHESTRATION: DAILY URGENT (current/live design, no Gemini call) ======
-function runDailyUrgentCheck() {
-  var todayRows = buildDailyDigestDataset();
-  saveTodaysSnapshot_(todayRows);
-
-  var previousRows = getMostRecentPastSnapshot_() || [];
-  var hoursExceeded = findHoursExceededTasks_(todayRows);
-  var profitDrops = findProfitabilityDrops_(todayRows, previousRows);
-
-  var pmSet = {};
-  hoursExceeded.forEach(function(row) { pmSet[row.SES_PM] = true; });
-  profitDrops.forEach(function(drop) { pmSet[drop.pm] = true; });
-
-  var notifiedTaskIds = [];
-
-  Object.keys(pmSet).forEach(function(pmName) {
-    var pmHoursExceeded = hoursExceeded.filter(function(row) { return row.SES_PM === pmName; });
-    var pmProfitDrops = profitDrops.filter(function(d) { return d.pm === pmName; });
-    if (pmHoursExceeded.length === 0 && pmProfitDrops.length === 0) return;
-
-    var emailBody = buildDailyUrgentEmailHtml_(pmName, pmHoursExceeded, pmProfitDrops);
-    sendDigestEmail_(pmName, 'Urgent: Project Alerts - ' + formatDateForFilename_(new Date()), emailBody);
-
-    pmHoursExceeded.forEach(function(row) { notifiedTaskIds.push(row.TaskId); });
-  });
-
-  markTasksAsNotified_(notifiedTaskIds);
-  cleanUpOldSnapshots_();
-}
-
-
-// ====== WEEKLY DIGEST (Mondays) ======
 function buildWeeklyTaskGroups_(flaggedRowsForPm) {
   var byProject = groupRowsByProject_(flaggedRowsForPm);
   var individualTasks = [];
@@ -787,25 +419,12 @@ function runWeeklyDigest() {
   cleanUpOldSnapshots_();
 }
 
-
-// ====== TRIGGERS ======
-function isWeekend_() {
-  var day = new Date().getDay(); // 0 = Sunday, 6 = Saturday
-  return day === 0 || day === 6;
-}
-
-// Fires nightly. Skips Sat/Sun — Monday's run naturally covers the gap since
-// the ledger watermark and snapshot comparisons just look at "since last time".
-function runNightlyDigest() {
-  if (isWeekend_()) {
-    Logger.log('Weekend — skipping. Monday\'s run will automatically cover everything since Friday.');
-    return;
-  }
-  dailyUpdateProfitabilityLedger();
-  runDailyUrgentComparison(); // lives in PhaseTrial.gs — sends [Current] + [Trial: +Phases] emails
+function testWeeklyDigest() {
+  runWeeklyDigest();
 }
 
 function setupTriggers() {
+  // Clear any existing triggers for these first, so re-running this doesn't create duplicates.
   ScriptApp.getProjectTriggers().forEach(function(trigger) {
     var handler = trigger.getHandlerFunction();
     if (handler === 'runNightlyDigest' || handler === 'runWeeklyDigest') {
@@ -834,14 +453,385 @@ function listTriggers() {
   });
 }
 
+function isWeekend_() {
+  var day = new Date().getDay(); // 0 = Sunday, 6 = Saturday
+  return day === 0 || day === 6;
+}
+
+function runNightlyDigest() {
+  if (isWeekend_()) {
+    Logger.log('Weekend — skipping. Monday\'s run will automatically cover everything since Friday.');
+    return;
+  }
+  dailyUpdateProfitabilityLedger();
+  runDailyUrgentComparison();
+}
+
+function buildTaskUrl_(taskId) { return TASK_URL_BASE + taskId; }
+function buildProjectUrl_(projectId) { return PROJECT_URL_BASE + projectId; }
+
+
+// ====== PROFITABILITY LEDGER (locked totals + recent detail) ======
+function readLockedTotalsMap_() {
+  var data = getLockedTotalsSheet_().getDataRange().getValues();
+  var map = {};
+  for (var i = 1; i < data.length; i++) {
+    map[data[i][0]] = { lockedLaborCost: data[i][1], lockedThroughDate: data[i][2] };
+  }
+  return map;
+}
+
+// Run once on a fresh setup.
+function backfillProfitabilityLedger() {
+  var cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - LOCK_BUFFER_DAYS);
+  cutoff.setHours(0, 0, 0, 0);
+
+  var projects = getOpenFlatFeeProjects_();
+  Logger.log('Backfilling ' + projects.length + ' open Flat Fee projects...');
+
+  var lockedRows = [];
+  var timeLogDetailRows = [];
+
+  projects.forEach(function(project) {
+    var projectId = project.ProjectId;
+    var timeLogs = birdviewGetAllPages_('/api/v2/timelogs', { ProjectIds: projectId, Billable: true });
+
+    var lockedLaborCost = 0;
+    timeLogs.forEach(function(log) {
+      var calculatedCost = (log.Duration || 0) * (log.InternalRate || 0);
+      if (new Date(log.EntryDate) < cutoff) {
+        lockedLaborCost += calculatedCost;
+      } else {
+        timeLogDetailRows.push([log.TimeEntryId, projectId, calculatedCost, log.LastModificationDate]);
+      }
+    });
+
+    lockedRows.push([projectId, lockedLaborCost, cutoff.toISOString()]);
+  });
+
+  writeRows_(getLockedTotalsSheet_(), lockedRows);
+  writeRows_(getTimeLogDetailSheet_(), timeLogDetailRows);
+  Logger.log('Done. ' + lockedRows.length + ' projects locked. ' + timeLogDetailRows.length + ' recent time logs staged.');
+}
+
+// Run every night as part of the main flow (called from runDailyUrgentCheck's dataset build path
+// is NOT automatic — this updates the ledger itself; buildDailyDigestDataset reads from it).
+function dailyUpdateProfitabilityLedger() {
+  var projects = getOpenFlatFeeProjects_();
+  var lockedMap = readLockedTotalsMap_();
+
+  var timeLogDetailRows = [];
+  var newLockedRows = [];
+
+  projects.forEach(function(project) {
+    var projectId = project.ProjectId;
+    var existing = lockedMap[projectId];
+    var lockedLaborCost = existing ? existing.lockedLaborCost : 0;
+    var sinceDate = existing ? existing.lockedThroughDate : project.CreationDate;
+
+    var timeLogs = birdviewGetAllPages_('/api/v2/timelogs', { ProjectIds: projectId, Billable: true, EntryDateFrom: sinceDate });
+    timeLogs.forEach(function(log) {
+      var calculatedCost = (log.Duration || 0) * (log.InternalRate || 0);
+      timeLogDetailRows.push([log.TimeEntryId, projectId, calculatedCost, log.LastModificationDate]);
+    });
+
+    newLockedRows.push([projectId, lockedLaborCost, sinceDate]);
+  });
+
+  writeRows_(getTimeLogDetailSheet_(), timeLogDetailRows);
+  writeRows_(getLockedTotalsSheet_(), newLockedRows);
+  Logger.log('Daily update complete. ' + projects.length + ' projects checked. ' + timeLogDetailRows.length + ' time logs in the active window.');
+}
+
+function calculateExpectedProfitPercent_(projectId, project, tasks, userRateMap) {
+  var lockedRow = readLockedTotalsMap_()[projectId];
+  var lockedLaborCost = lockedRow ? lockedRow.lockedLaborCost : 0;
+  var recentLaborCost = getDataRowsForProject_(getTimeLogDetailSheet_(), projectId)
+    .reduce(function(sum, row) { return sum + row[2]; }, 0);
+  var actualLaborCost = lockedLaborCost + recentLaborCost;
+
+  var taskIds = tasks.map(function(t) { return t.TaskId; });
+  var etcLaborCost = 0;
+  if (taskIds.length > 0) {
+    getAssigneesForTasks_(taskIds).forEach(function(a) {
+      if (!a.UserId) return;
+      etcLaborCost += (a.PersonalHoursLeft || 0) * (userRateMap[a.UserId] || 0);
+    });
+  }
+
+  var plannedExpenses = birdviewGetAllPages_('/api/v2/expenses', { ProjectId: projectId, IsPlanned: true });
+  var plannedTotal = plannedExpenses.reduce(function(sum, e) { return sum + (e.Amount || 0); }, 0);
+  var plannedBillableTotal = plannedExpenses.reduce(function(sum, e) { return sum + (e.Billable ? (e.Amount || 0) : 0); }, 0);
+
+  var eacBillable = (project.BillingAmount || 0) + plannedBillableTotal;
+  var eacCost = actualLaborCost + etcLaborCost + plannedTotal;
+  var expectedProfitPercent = eacBillable > 0 ? ((eacBillable - eacCost) / eacBillable) * 100 : null;
+
+  return { eacBillable: eacBillable, eacCost: eacCost, expectedProfitPercent: expectedProfitPercent };
+}
+
+
+// ====== DAILY DATASET ASSEMBLY (the core output — one row per open task) ======
+function buildDailyDigestDataset() {
+  var projects = getOpenFlatFeeProjects_();
+  var pmLookup = getSesPmLookup_();
+  var userRateMap = getAllUserRates_();
+  var rows = [];
+
+  projects.forEach(function(project) {
+    var projectId = project.ProjectId;
+    var pmId = project.CustomFields ? project.CustomFields[CUSTOM_FIELD_SES_PM] : null;
+    var pmName = pmLookup[pmId] || 'Unassigned';
+
+    var allTasks = getAllTasksForProject_(projectId);
+    var taskLookup = buildTaskLookup_(allTasks);
+    var tasks = getOpenLeafTasksFromAll_(allTasks);
+
+    var hoursMap = getActualHoursByTaskForProject_(projectId);
+    var profitData = calculateExpectedProfitPercent_(projectId, project, tasks, userRateMap);
+
+    tasks.forEach(function(task) {
+      var actualHours = hoursMap[task.TaskId] || 0;
+
+      rows.push({
+        ProjectId: projectId,
+        ProjectName: project.Name,
+        SES_PM: pmName,
+        ExpectedProfitPercent: profitData.expectedProfitPercent,
+        TaskId: task.TaskId,
+        TaskName: task.Name,
+        ParentBreadcrumb: buildParentBreadcrumb_(task.TaskId, taskLookup),
+        TaskUrl: buildTaskUrl_(task.TaskId),
+        EndDate: task.EndDate,
+        HoursLeft: task.HoursLeft,
+        ActualHours: actualHours,
+        EstimatedHours: task.EstimatedHours || 0,
+        TotalHours: actualHours + (task.HoursLeft || 0),
+        Flags: buildTaskFlags_(task, actualHours).join(', ')
+      });
+    });
+  });
+
+  Logger.log('Built ' + rows.length + ' task rows across ' + projects.length + ' projects.');
+  return rows;
+}
+
+
+// ====== SNAPSHOTS (Drive storage for day-over-day comparison) ======
+function getSnapshotFolder_() {
+  var folders = DriveApp.getFoldersByName(DIGEST_SNAPSHOT_FOLDER_NAME);
+  return folders.hasNext() ? folders.next() : DriveApp.createFolder(DIGEST_SNAPSHOT_FOLDER_NAME);
+}
+
+function formatDateForFilename_(date) {
+  return Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+}
+
+function saveTodaysSnapshot_(rows) {
+  var folder = getSnapshotFolder_();
+  var filename = 'digest-snapshot-' + formatDateForFilename_(new Date()) + '.json';
+
+  var existing = folder.getFilesByName(filename);
+  if (existing.hasNext()) existing.next().setTrashed(true);
+
+  folder.createFile(filename, JSON.stringify(rows), MimeType.PLAIN_TEXT);
+  Logger.log('Saved snapshot: ' + filename);
+}
+
+function getMostRecentPastSnapshot_() {
+  var folder = getSnapshotFolder_();
+  var files = folder.getFiles();
+  var todayFilename = 'digest-snapshot-' + formatDateForFilename_(new Date()) + '.json';
+
+  var candidates = [];
+  while (files.hasNext()) {
+    var file = files.next();
+    if (file.getName() !== todayFilename && file.getName().indexOf('digest-snapshot-') === 0) {
+      candidates.push(file);
+    }
+  }
+
+  if (candidates.length === 0) {
+    Logger.log('No previous snapshot found — this must be the first run.');
+    return null;
+  }
+
+  candidates.sort(function(a, b) { return b.getName().localeCompare(a.getName()); });
+  Logger.log('Using previous snapshot: ' + candidates[0].getName());
+  return JSON.parse(candidates[0].getBlob().getDataAsString());
+}
+
+function cleanUpOldSnapshots_() {
+  var folder = getSnapshotFolder_();
+  var files = folder.getFiles();
+  var cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - SNAPSHOT_RETENTION_DAYS);
+
+  while (files.hasNext()) {
+    var file = files.next();
+    if (file.getName().indexOf('digest-snapshot-') === 0 && file.getDateCreated() < cutoff) {
+      file.setTrashed(true);
+      Logger.log('Deleted old snapshot: ' + file.getName());
+    }
+  }
+}
+
+
+// ====== PROFITABILITY DROP DETECTION ======
+function getProjectProfitSnapshot_(rows) {
+  var map = {};
+  rows.forEach(function(row) {
+    if (!(row.ProjectId in map)) {
+      map[row.ProjectId] = { projectName: row.ProjectName, pm: row.SES_PM, expectedProfitPercent: row.ExpectedProfitPercent };
+    }
+  });
+  return map;
+}
+
+function findProfitabilityDrops_(todayRows, previousRows) {
+  var todayProjects = getProjectProfitSnapshot_(todayRows);
+  var previousProjects = getProjectProfitSnapshot_(previousRows);
+
+  var drops = [];
+  Object.keys(todayProjects).forEach(function(projectId) {
+    var today = todayProjects[projectId];
+    var previous = previousProjects[projectId];
+    if (!previous || today.expectedProfitPercent == null || previous.expectedProfitPercent == null) return;
+
+    var change = today.expectedProfitPercent - previous.expectedProfitPercent;
+    if (change < -PROFIT_DROP_THRESHOLD) {
+      drops.push({
+        projectId: Number(projectId),
+        projectName: today.projectName,
+        pm: today.pm,
+        yesterdayPercent: previous.expectedProfitPercent,
+        todayPercent: today.expectedProfitPercent,
+        change: change
+      });
+    }
+  });
+  return drops;
+}
+
+
+// ====== HOURS-EXCEEDED-ESTIMATE DETECTION (fires once per task, ever) ======
+function getAlreadyNotifiedTaskIds_() {
+  var data = getHoursExceededNotifiedSheet_().getDataRange().getValues();
+  var set = {};
+  for (var i = 1; i < data.length; i++) set[data[i][0]] = true;
+  return set;
+}
+
+function markTasksAsNotified_(taskIds) {
+  if (taskIds.length === 0) return;
+  var sheet = getHoursExceededNotifiedSheet_();
+  var today = new Date().toISOString();
+  sheet.getRange(sheet.getLastRow() + 1, 1, taskIds.length, 2)
+    .setValues(taskIds.map(function(id) { return [id, today]; }));
+}
+
+function findHoursExceededTasks_(todayRows) {
+  var alreadyNotified = getAlreadyNotifiedTaskIds_();
+  return todayRows.filter(function(row) {
+    if (!row.EstimatedHours || row.EstimatedHours <= MIN_ESTIMATED_HOURS_FOR_ALERT) return false;
+    if (row.ActualHours <= row.EstimatedHours) return false;
+    return !alreadyNotified[row.TaskId];
+  });
+}
+
+
+// ====== EMAIL: DAILY URGENT ALERT ======
+function printSesPmLookup() {
+  var lookup = getSesPmLookup_();
+  Object.keys(lookup).forEach(function(id) {
+    Logger.log(id + '  -->  ' + lookup[id]);
+  });
+}
+
+function groupRowsByProject_(rows) {
+  var map = {};
+  rows.forEach(function(row) {
+    if (!map[row.ProjectId]) map[row.ProjectId] = { projectName: row.ProjectName, tasks: [] };
+    map[row.ProjectId].tasks.push(row);
+  });
+  return map;
+}
+
+function buildDailyUrgentEmailHtml_(pmName, hoursExceededRows, profitDrops) {
+  var html = '<p>Hi ' + pmName + ',</p><p>Here are today\'s urgent project alerts:</p>';
+
+  if (hoursExceededRows.length > 0) {
+    html += '<h3>&#9200; Tasks that have exceeded their estimated hours</h3><ul>';
+    var byProject = groupRowsByProject_(hoursExceededRows);
+    Object.keys(byProject).forEach(function(projectId) {
+      var group = byProject[projectId];
+      html += '<li><strong>' + group.projectName + '</strong><ul>';
+      group.tasks.forEach(function(row) {
+        html += '<li><a href="' + row.TaskUrl + '">' + row.ParentBreadcrumb + ' / ' + row.TaskName + '</a> (A: ' +
+          row.ActualHours.toFixed(1) + ' h / E: ' + row.EstimatedHours.toFixed(1) + ' h)</li>';
+      });
+      html += '</ul></li>';
+    });
+    html += '</ul>';
+  }
+
+  if (profitDrops.length > 0) {
+    html += '<h3>&#128201; Projects with a drop in expected profit</h3><ul>';
+    profitDrops.forEach(function(drop) {
+      html += '<li><a href="' + buildProjectUrl_(drop.projectId) + '">' + drop.projectName + '</a> (' +
+        drop.yesterdayPercent.toFixed(1) + '% &rarr; ' + drop.todayPercent.toFixed(1) + '%)</li>';
+    });
+    html += '</ul>';
+  }
+
+  html += '<p style="color:#888;font-size:12px;">Automated alert from the Birdview Daily Digest trial.</p>';
+  return html;
+}
+
+function sendDigestEmail_(pmName, subject, htmlBody) {
+  var email = getPmEmail_(pmName);
+  if (!email) {
+    Logger.log('No email mapped for PM "' + pmName + '" — skipping send.');
+    return;
+  }
+  GmailApp.sendEmail(email, subject, '', { htmlBody: htmlBody });
+  Logger.log('Sent email to ' + pmName + ' (' + email + '): ' + subject);
+}
+
+// ====== ORCHESTRATION ======
+function runDailyUrgentCheck() {
+  var todayRows = buildDailyDigestDataset();
+  saveTodaysSnapshot_(todayRows);
+
+  var previousRows = getMostRecentPastSnapshot_() || [];
+  var hoursExceeded = findHoursExceededTasks_(todayRows);
+  var profitDrops = findProfitabilityDrops_(todayRows, previousRows);
+
+  var pmSet = {};
+  hoursExceeded.forEach(function(row) { pmSet[row.SES_PM] = true; });
+  profitDrops.forEach(function(drop) { pmSet[drop.pm] = true; });
+
+  var notifiedTaskIds = [];
+
+  Object.keys(pmSet).forEach(function(pmName) {
+    var pmHoursExceeded = hoursExceeded.filter(function(row) { return row.SES_PM === pmName; });
+    var pmProfitDrops = profitDrops.filter(function(d) { return d.pm === pmName; });
+    if (pmHoursExceeded.length === 0 && pmProfitDrops.length === 0) return;
+
+    var emailBody = buildDailyUrgentEmailHtml_(pmName, pmHoursExceeded, pmProfitDrops);
+    sendDigestEmail_(pmName, 'Urgent: Project Alerts - ' + formatDateForFilename_(new Date()), emailBody);
+
+    pmHoursExceeded.forEach(function(row) { notifiedTaskIds.push(row.TaskId); });
+  });
+
+  markTasksAsNotified_(notifiedTaskIds);
+  cleanUpOldSnapshots_();
+}
 
 // ====== TEST / VERIFICATION TOOLS ======
 function testDailyUrgentCheck() {
   runDailyUrgentCheck();
-}
-
-function testWeeklyDigest() {
-  runWeeklyDigest();
 }
 
 function testBuildDatasetSmall() {
@@ -863,19 +853,12 @@ function runVerify3656() {
   verifyExpectedProfitPercent(3656);
 }
 
-function printSesPmLookup() {
-  var lookup = getSesPmLookup_();
-  Object.keys(lookup).forEach(function(id) {
-    Logger.log(id + '  -->  ' + lookup[id]);
-  });
-}
-
 // TESTING ONLY — never call this from a trigger or scheduled function.
 // Wipes both "already notified" tracking sheets, so the next test run
 // re-flags everything currently over threshold, as if for the first time.
 function clearNotifiedTrackingForTesting_() {
   writeRows_(getHoursExceededNotifiedSheet_(), []);
-  writeRows_(getPhaseThresholdNotifiedSheet_(), []); // lives in PhaseTrial.gs
+  writeRows_(getPhaseThresholdNotifiedSheet_(), []);
   Logger.log('Cleared HoursExceededNotified and PhaseThresholdNotified — next run will re-flag everything currently over threshold.');
 }
 
