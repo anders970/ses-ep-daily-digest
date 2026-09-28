@@ -38,7 +38,7 @@ time), since file load order isn't something to rely on.
 | `Ledger.gs` | Ledger spreadsheet access (URL hardcoded in `getLedgerSpreadsheet_()`), ledger backfill/daily update, `calculateExpectedProfitPercent_`. |
 | `Dataset.gs` | `buildNightlyData_()` (single pass → task rows + phase rows), `buildTaskFlags_`, all Drive snapshot helpers. |
 | `DailyAlerts.gs` | Profit-drop + hours-exceeded detection, shared email helpers/sections, the "[Current]" urgent email builder. |
-| `WeeklyDigest.gs` | Monday digest: grouping, profit summary, Gemini call, email. |
+| `WeeklyDigest.gs` | Monday digest: the two task lists (0 hours left / overdue), profit summary, email. |
 | `PhaseTrial.gs` | A/B trial: phase aggregation + tracking + "[Trial: +Phases]" email, and `runDailyUrgentComparison()` — the stage-2 orchestrator that sends BOTH urgent emails. Once the trial is decided, fold the winner into `DailyAlerts.gs` and delete this file. |
 | `Tests.gs` | Manual-only helpers: `testNightlyBuild`, `testDailyUrgentComparison`, `testWeeklyDigest`, `verifyExpectedProfitPercent`, `printSesPmLookup`, the TESTING-ONLY tracking reset. |
 | `appsscript.json` | Manifest. Declares the `OAuth2` library dependency (Apps Script "OAuth2 for Apps Script") used for the Birdview Authorization Code Grant flow. Time zone `America/Vancouver`. |
@@ -50,7 +50,8 @@ Script editor — never commit these anywhere):
 - `BIRDVIEW_CLIENT_ID`, `BIRDVIEW_CLIENT_SECRET` — from Birdview's OAuth
   app registration (Automatic Consent Grant: on; Client Credentials Grant:
   off).
-- `GEMINI_API_KEY`
+- `GEMINI_API_KEY` — no longer used (the weekly digest stopped calling
+  Gemini on 2026-09-28); safe to delete from Script Properties.
 
 **Google Sheet** (the "ledger" spreadsheet, URL hardcoded in
 `getLedgerSpreadsheet_()`), with these tabs:
@@ -76,7 +77,7 @@ snapshot, so no execution both builds data and sends email):
 |---|---|---|
 | `runNightlyDigest` | ~2am, skips Sat/Sun | ledger update + `buildNightlyData_()` → saves `phase-snapshot-<date>.json` then `digest-snapshot-<date>.json` (task snapshot saved LAST = "build finished" marker). No email. |
 | `runNightlyAlerts` | ~4am, skips Sat/Sun | reads today's snapshots → `runDailyUrgentComparison()` ([Current] + [Trial: +Phases] emails). No Birdview calls. |
-| `runWeeklyDigest` | ~6am Mondays | reads today's task snapshot → flagging + Gemini + weekly emails. No Birdview calls, no ledger update. |
+| `runWeeklyDigest` | ~6am Mondays | reads today's task snapshot → weekly emails. No Birdview or Gemini calls, no ledger update. |
 
 Every trigger entry point runs inside `runWithErrorAlert_()`, which emails
 `ADMIN_EMAIL` the error + stack trace and re-throws (so Executions still
@@ -159,13 +160,24 @@ BRAND-NEW occurrences, no Gemini call, compact one-line formatting:
    `PROFIT_DROP_THRESHOLD` (2) percentage points since the most recent
    snapshot.
 
-**Weekly digest** (`runWeeklyDigest`, Monday mornings) — covers ALL
-currently-flagged tasks (RED_NO_HOURS_LEFT, YELLOW_LOW_HOURS, PAST_DUE,
-DUE_SOON, OVER_ESTIMATE), Gemini-assisted per-task explanations. A project
-with more than 2 flagged tasks (combined across all flag types) is
-collapsed into one summarized line instead of listing each task
-individually. Also shows each project's current Expected Profit % and its
-week-over-week change (via a snapshot from ~7 days ago, ±2 day tolerance).
+**Weekly digest** (`runWeeklyDigest`, Monday mornings) — deterministic, no
+AI calls. Two task lists, each grouped by project (projects alphabetical):
+1. "Open tasks with 0 hours left" — `RED_NO_HOURS_LEFT`, most over-budget
+   (actual − estimated hours) first.
+2. "Open tasks with an overdue end date" — `PAST_DUE`, most overdue first.
+
+A task with both flags appears in both lists. Format per project:
+```
+Project Name        (link to EP project)
+└ Task Name         (link to EP task)
+└ Task Name
+└ (X more tasks)    (when a project has > WEEKLY_MAX_TASKS_PER_PROJECT (2))
+```
+The other flags (`YELLOW_LOW_HOURS`, `DUE_SOON`, `OVER_ESTIMATE`) are still
+computed into the snapshot but not shown in the weekly email. Also shows each
+project's current Expected Profit % and its week-over-week change (via a
+snapshot from ~7 days ago, ±2 day tolerance). Birdview names are free text —
+always pass them through `escapeHtml_()` when building email HTML.
 
 **Phase-level trial** (`PhaseTrial.gs`, A/B test) — separate, additive
 design being trialed alongside the daily urgent email without replacing it.
@@ -189,7 +201,7 @@ email side by side.
   the hand-off between pipeline stages and what day-over-day (profit drops)
   and week-over-week (weekly digest) comparisons are based on.
 - **PMs not in `PM_EMAIL_MAP` are skipped entirely** by the alert/digest
-  senders — no Gemini call, and their tasks/phases are NOT marked in the
+  senders, and their tasks/phases are NOT marked in the
   "notified" sheets (so they still fire once that PM is added at rollout).
 - **Ledger sheets are read once per run** (`readLedgerCosts_()`, passed into
   `calculateExpectedProfitPercent_`) and the spreadsheet handle is cached
@@ -225,9 +237,7 @@ email side by side.
    into `LockedTotals` and advances `LockedThroughDate`. Over time the
    detail sheet and the per-run query window will keep growing. Needs a
    periodic (e.g. weekly) rollover step.
-4. Double check the Gemini model string used in
-   `callGeminiForWeeklyTasks_` (`gemini-3.5-flash`) is still correct/current
-   before the next round of changes.
+4. *(Resolved 2026-09-28: the weekly digest no longer calls Gemini.)*
 5. **Rollout plan**: extend `PM_EMAIL_MAP` from just Anders to all 13 PMs
    (ID↔name table above) once the trial is validated and the missing-email
    bug is fixed, then move the whole thing from Anders's personal Workspace

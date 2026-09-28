@@ -72,6 +72,12 @@ function findHoursExceededTasks_(todayRows) {
 
 // ====== EMAIL ======
 
+// Birdview project/task names are free text — escape before putting them in HTML.
+function escapeHtml_(text) {
+  return String(text == null ? '' : text)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 function groupRowsByProject_(rows) {
   var map = {};
   rows.forEach(function(row) {

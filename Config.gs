@@ -5,7 +5,7 @@
 //
 // SETUP CHECKLIST — required before this script will run:
 //   Script Properties (Project Settings → Script Properties):
-//     BIRDVIEW_CLIENT_ID, BIRDVIEW_CLIENT_SECRET, GEMINI_API_KEY
+//     BIRDVIEW_CLIENT_ID, BIRDVIEW_CLIENT_SECRET
 //   Sheet tabs (in the ledger spreadsheet, see Ledger.gs):
 //     TimeLogDetail          — TimeEntryId | ProjectId | Cost | LastModificationDate
 //     LockedTotals           — ProjectId | LockedLaborCost | LockedThroughDate
@@ -35,6 +35,7 @@ const TASK_URL_BASE = BIRDVIEW_BASE + '/1/activities/activity/';
 const LOCK_BUFFER_DAYS = 45;
 const PROFIT_DROP_THRESHOLD = 2; // percentage points
 const MIN_ESTIMATED_HOURS_FOR_ALERT = 5; // daily urgent "over estimate" alert only fires for tasks with more than this many estimated hours
+const WEEKLY_MAX_TASKS_PER_PROJECT = 2; // weekly digest lists this many tasks per project, then "(X more tasks)"
 
 
 // ====== SNAPSHOTS ======

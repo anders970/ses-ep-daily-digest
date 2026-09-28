@@ -1,5 +1,6 @@
 // ==========================================================================
-// WEEKLY DIGEST (Mondays) — Gemini-assisted summary of all flagged tasks
+// WEEKLY DIGEST (Mondays) — open tasks with 0 hours left / overdue, plus
+// each project's Expected Profit % and week-over-week change
 // ==========================================================================
 
 
@@ -10,27 +11,28 @@ function sendWeeklyDigestFromSnapshot_() {
   if (!todayRows) return;
 
   var weekAgoRows = getSnapshotFromApproxDaysAgo_(7, 2) || [];
-  var flaggedToday = todayRows.filter(function(r) { return r.Flags && r.Flags.length > 0; });
 
   var pmNames = {};
   todayRows.forEach(function(row) { pmNames[row.SES_PM] = true; });
 
   Object.keys(pmNames).forEach(function(pmName) {
     if (!getPmEmail_(pmName)) {
-      Logger.log('No email mapped for PM "' + pmName + '" — skipping (no Gemini call).');
+      Logger.log('No email mapped for PM "' + pmName + '" — skipping.');
       return;
     }
-    var pmFlaggedRows = flaggedToday.filter(function(r) { return r.SES_PM === pmName; });
-    var groups = buildWeeklyTaskGroups_(pmFlaggedRows);
+    var pmRows = todayRows.filter(function(r) { return r.SES_PM === pmName; });
+
+    // Most over-budget first / most overdue first, so the tasks shown before
+    // "(X more tasks)" are the ones that most need attention.
+    var noHoursLeft = pmRows.filter(function(r) { return hasFlag_(r, 'RED_NO_HOURS_LEFT'); })
+      .sort(function(a, b) { return (b.ActualHours - b.EstimatedHours) - (a.ActualHours - a.EstimatedHours); });
+    var overdue = pmRows.filter(function(r) { return hasFlag_(r, 'PAST_DUE'); })
+      .sort(function(a, b) { return new Date(a.EndDate) - new Date(b.EndDate); });
     var profitSummary = buildWeeklyProfitabilitySummary_(pmName, todayRows, weekAgoRows);
 
-    if (groups.individualTasks.length === 0 && groups.summarizedProjects.length === 0 && profitSummary.length === 0) return;
+    if (noHoursLeft.length === 0 && overdue.length === 0 && profitSummary.length === 0) return;
 
-    var explanations = callGeminiForWeeklyTasks_(pmName, groups.individualTasks);
-    var explanationMap = {};
-    explanations.forEach(function(e) { explanationMap[e.taskId] = e.explanation; });
-
-    var emailBody = buildWeeklyDigestEmailHtml_(pmName, groups.individualTasks, explanationMap, groups.summarizedProjects, profitSummary);
+    var emailBody = buildWeeklyDigestEmailHtml_(pmName, noHoursLeft, overdue, profitSummary);
     sendDigestEmail_(pmName, 'Weekly Project Digest - Week of ' + formatDateForFilename_(new Date()), emailBody);
   });
 }
@@ -38,26 +40,9 @@ function sendWeeklyDigestFromSnapshot_() {
 
 // ====== CONTENT ======
 
-function buildWeeklyTaskGroups_(flaggedRowsForPm) {
-  var byProject = groupRowsByProject_(flaggedRowsForPm);
-  var individualTasks = [];
-  var summarizedProjects = [];
-
-  Object.keys(byProject).forEach(function(projectId) {
-    var group = byProject[projectId];
-    if (group.tasks.length > 2) {
-      summarizedProjects.push({
-        projectId: Number(projectId),
-        projectName: group.projectName,
-        count: group.tasks.length,
-        exampleTaskName: group.tasks[0].TaskName
-      });
-    } else {
-      group.tasks.forEach(function(row) { individualTasks.push(row); });
-    }
-  });
-
-  return { individualTasks: individualTasks, summarizedProjects: summarizedProjects };
+// Flags is stored as a comma-separated string, e.g. "RED_NO_HOURS_LEFT, PAST_DUE".
+function hasFlag_(row, flag) {
+  return (row.Flags || '').split(', ').indexOf(flag) !== -1;
 }
 
 function buildWeeklyProfitabilitySummary_(pmName, todayRows, weekAgoRows) {
@@ -80,54 +65,38 @@ function buildWeeklyProfitabilitySummary_(pmName, todayRows, weekAgoRows) {
   return summary;
 }
 
-function callGeminiForWeeklyTasks_(pmName, individualTaskRows) {
-  if (individualTaskRows.length === 0) return [];
+// One task-list section:
+//   Project Name (link)
+//   └ Task Name (link)
+//   └ (X more tasks)
+// Projects are listed alphabetically; tasks keep the order they were passed in.
+function buildWeeklyTaskSectionHtml_(title, rows) {
+  var html = '<h3>' + title + '</h3>';
+  if (rows.length === 0) return html + '<p style="color:#888;">None.</p>';
 
-  var apiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
-  var url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=' + apiKey;
-
-  var itemsForPrompt = individualTaskRows.map(function(row) {
-    return { taskId: row.TaskId, projectName: row.ProjectName, taskName: row.TaskName, parentBreadcrumb: row.ParentBreadcrumb, endDate: row.EndDate, hoursLeft: row.HoursLeft, totalHours: row.TotalHours, estimatedHours: row.EstimatedHours, actualHours: row.ActualHours, flags: row.Flags };
-  });
-
-  var responseSchema = {
-    type: 'ARRAY',
-    items: { type: 'OBJECT', properties: { taskId: { type: 'INTEGER' }, explanation: { type: 'STRING' } }, required: ['taskId', 'explanation'] }
-  };
-
-  var promptText = 'You are helping write a weekly project status digest for a project manager named ' + pmName + '. ' +
-    'Below is a JSON array of tasks currently flagged for attention. Flags mean: RED_NO_HOURS_LEFT (zero hours left), YELLOW_LOW_HOURS (under 20% of hours remain), ' +
-    'PAST_DUE (end date has passed), DUE_SOON (end date within 5 days), OVER_ESTIMATE (actual hours logged have exceeded the originally estimated hours). ' +
-    'A task can have more than one flag. For each task, write ONE short, factual, plain-English sentence explaining why it matters, using the specific numbers given. ' +
-    'Do not invent information not present in the data. Return exactly one entry per task, in the same order as the input.\n\n' +
-    JSON.stringify(itemsForPrompt);
-
-  var payload = { contents: [{ parts: [{ text: promptText }] }], generationConfig: { responseMimeType: 'application/json', responseSchema: responseSchema } };
-  var response = UrlFetchApp.fetch(url, { method: 'post', contentType: 'application/json', payload: JSON.stringify(payload), muteHttpExceptions: true });
-
-  if (response.getResponseCode() !== 200) {
-    throw new Error('Gemini request failed (' + response.getResponseCode() + '): ' + response.getContentText());
-  }
-  return JSON.parse(JSON.parse(response.getContentText()).candidates[0].content.parts[0].text);
+  var byProject = groupRowsByProject_(rows);
+  Object.keys(byProject)
+    .sort(function(a, b) { return byProject[a].projectName.localeCompare(byProject[b].projectName); })
+    .forEach(function(projectId) {
+      var group = byProject[projectId];
+      html += '<div style="margin-top:8px;"><a href="' + buildProjectUrl_(projectId) + '"><strong>' +
+        escapeHtml_(group.projectName) + '</strong></a></div>';
+      group.tasks.slice(0, WEEKLY_MAX_TASKS_PER_PROJECT).forEach(function(row) {
+        html += '<div style="margin-left:12px;">&#9492; <a href="' + row.TaskUrl + '">' + escapeHtml_(row.TaskName) + '</a></div>';
+      });
+      var hidden = group.tasks.length - WEEKLY_MAX_TASKS_PER_PROJECT;
+      if (hidden > 0) {
+        html += '<div style="margin-left:12px;color:#666;">&#9492; (' + hidden + ' more task' + (hidden === 1 ? '' : 's') + ')</div>';
+      }
+    });
+  return html;
 }
 
-function buildWeeklyDigestEmailHtml_(pmName, individualTasks, taskExplanationMap, summarizedProjects, profitSummary) {
+function buildWeeklyDigestEmailHtml_(pmName, noHoursLeftRows, overdueRows, profitSummary) {
   var html = '<p>Hi ' + pmName + ',</p><p>Here\'s your weekly project status digest:</p>';
 
-  if (individualTasks.length > 0 || summarizedProjects.length > 0) {
-    html += '<h3>&#128203; Tasks needing attention</h3><ul>';
-    individualTasks.forEach(function(row) {
-      var explanation = taskExplanationMap[row.TaskId] || (row.TaskName + ' is flagged: ' + row.Flags);
-      html += '<li><a href="' + row.TaskUrl + '"><strong>' + row.ProjectName + '</strong> — ' + row.ParentBreadcrumb + ' / ' + row.TaskName + '</a><br>' + explanation + '</li>';
-    });
-    summarizedProjects.forEach(function(proj) {
-      html += '<li><a href="' + buildProjectUrl_(proj.projectId) + '"><strong>' + proj.projectName + '</strong></a> has ' + proj.count +
-        ' flagged tasks needing attention, including "' + proj.exampleTaskName + '".</li>';
-    });
-    html += '</ul>';
-  } else {
-    html += '<p>No flagged tasks this week.</p>';
-  }
+  html += buildWeeklyTaskSectionHtml_('&#128308; Open tasks with 0 hours left', noHoursLeftRows);
+  html += buildWeeklyTaskSectionHtml_('&#128197; Open tasks with an overdue end date', overdueRows);
 
   if (profitSummary.length > 0) {
     html += '<h3>&#128200; Expected profitability standing</h3><ul>';
@@ -140,7 +109,7 @@ function buildWeeklyDigestEmailHtml_(pmName, individualTasks, taskExplanationMap
       } else {
         changeText = ' (no data from last week to compare)';
       }
-      html += '<li><a href="' + buildProjectUrl_(p.projectId) + '"><strong>' + p.projectName + '</strong></a>: ' +
+      html += '<li><a href="' + buildProjectUrl_(p.projectId) + '"><strong>' + escapeHtml_(p.projectName) + '</strong></a>: ' +
         (p.todayPercent != null ? p.todayPercent.toFixed(1) + '%' : 'n/a') + changeText + '</li>';
     });
     html += '</ul>';
