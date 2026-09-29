@@ -30,7 +30,7 @@ function findProfitabilityDrops_(todayRows, previousRows) {
     if (!previous || today.expectedProfitPercent == null || previous.expectedProfitPercent == null) return;
 
     var change = today.expectedProfitPercent - previous.expectedProfitPercent;
-    if (change < -PROFIT_DROP_THRESHOLD) {
+    if (change <= -PROFIT_DROP_THRESHOLD) {
       drops.push({
         projectId: Number(projectId),
         projectName: today.projectName,
@@ -157,8 +157,8 @@ function buildDailyUrgentEmailHtml_(pmName, hoursExceededRows, phasesOverThresho
       PHASE_THRESHOLD_PERCENT + '% or more of their estimated hours.',
     buildPhasesOverThresholdItemsHtml_(phasesOverThreshold));
   html += buildAlertSectionHtml_('&#128201; Projects with a drop in expected profit',
-    'Fires when a project\'s Expected Profit % falls by more than ' + PROFIT_DROP_THRESHOLD +
-      ' percentage points since the previous nightly snapshot.',
+    'Fires when a project\'s Expected Profit % falls by ' + PROFIT_DROP_THRESHOLD +
+      ' percentage points or more since the previous nightly snapshot.',
     buildProfitDropsItemsHtml_(profitDrops));
 
   html += '<p style="color:#888;font-size:12px;">Automated alert from the Birdview Daily Digest trial. ' +

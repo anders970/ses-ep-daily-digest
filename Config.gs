@@ -33,7 +33,7 @@ const TASK_URL_BASE = BIRDVIEW_BASE + '/1/activities/activity/';
 // ====== THRESHOLDS ======
 
 const LOCK_BUFFER_DAYS = 45;
-const PROFIT_DROP_THRESHOLD = 2; // percentage points
+const PROFIT_DROP_THRESHOLD = 5; // percentage points — a drop of this much or more alerts (and shows red in the weekly digest)
 const MIN_ESTIMATED_HOURS_FOR_ALERT = 5; // daily urgent "over estimate" alert only fires for tasks with more than this many estimated hours
 const WEEKLY_MAX_TASKS_PER_PROJECT = 2; // weekly digest lists this many tasks per project, then "(X more tasks)"
 

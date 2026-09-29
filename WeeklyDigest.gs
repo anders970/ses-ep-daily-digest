@@ -126,7 +126,7 @@ function buildWeeklyDigestEmailHtml_(pmName, bothRows, noHoursLeftRows, overdueR
       var changeText;
       if (p.change != null) {
         var arrow = p.change > 0 ? '&#9650;' : (p.change < 0 ? '&#9660;' : '&#8212;');
-        var color = p.change < -PROFIT_DROP_THRESHOLD ? 'color:#c00;' : (p.change > 0 ? 'color:#080;' : '');
+        var color = p.change <= -PROFIT_DROP_THRESHOLD ? 'color:#c00;' : (p.change > 0 ? 'color:#080;' : '');
         changeText = ' <span style="' + color + '">' + arrow + ' ' + (p.change > 0 ? '+' : '') + p.change.toFixed(1) + 'pp vs last week</span>';
       } else {
         changeText = ' (no data from last week to compare)';

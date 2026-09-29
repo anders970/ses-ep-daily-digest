@@ -167,9 +167,10 @@ section has items. Anders will pick which rules to keep; drop the rest.
    ≥`PHASE_THRESHOLD_PERCENT` (66)% of estimated hours used, excluding
    Closed leaf tasks from the aggregate). Fires once ever per phase via
    `PhaseThresholdNotified`.
-3. **Profit drops** — a project's Expected Profit % has dropped by more
-   than `PROFIT_DROP_THRESHOLD` (2) percentage points since the most recent
-   snapshot.
+3. **Profit drops** — a project's Expected Profit % has dropped by
+   `PROFIT_DROP_THRESHOLD` (5) percentage points or more since the most
+   recent snapshot (raised from "more than 2" on 2026-09-29). The same
+   threshold colours a week-over-week drop red in the weekly digest.
 
 (Until 2026-09-29 this was two separate emails, "[Current]" and
 "[Trial: +Phases]"; they were merged into the one sectioned email.)
