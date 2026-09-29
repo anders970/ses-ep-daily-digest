@@ -41,6 +41,7 @@ time), since file load order isn't something to rely on.
 | `PhaseAlerts.gs` | Phase aggregation (built during the nightly build), `PhaseThresholdNotified` tracking, `findPhasesOverThreshold_` — feeds the phase section of the daily urgent email. |
 | `WeeklyDigest.gs` | Monday digest: the three task lists (0 hours left + overdue / 0 hours left / overdue), profit summary, email. |
 | `Tests.gs` | Manual-only helpers: `testNightlyBuild`, `testDailyUrgentAlerts`, `testWeeklyDigest`, `verifyExpectedProfitPercent`, `printSesPmLookup`, the TESTING-ONLY tracking reset. |
+| `docs/` | Reference only (not pushed to Apps Script): Birdview API v2 OpenAPI spec + notes. See "Reference docs" below. |
 | `appsscript.json` | Manifest. Declares the `OAuth2` library dependency (Apps Script "OAuth2 for Apps Script") used for the Birdview Authorization Code Grant flow. Time zone `America/Vancouver`. |
 
 ## Setup checklist (fresh environment)
@@ -255,6 +256,33 @@ always pass them through `escapeHtml_()` when building email HTML.
 6. `clearNotifiedTrackingForTesting_()` / `testClearNotifiedTracking()` in
    Tests.gs are TESTING ONLY — wipe both "notified" tracking sheets so a test
    run re-flags everything. Never call from a trigger or in production.
+7. **[PLANNED, decided 2026-09-29] "Update my flagged tasks" page.** The
+   digest email links to an Apps Script web page listing that PM's flagged
+   tasks, where the PM manually enters a new end date and/or resets hours
+   left; on Submit the script pushes the changes to Birdview. Decisions:
+   - Structured form only — no AI parsing of free-text replies.
+   - **Changes must be made AS THE PM**, not as Anders: each PM signs in to
+     Birdview once (OAuth2 library with a per-user property store, i.e.
+     `PropertiesService.getUserProperties()`), and every write uses that
+     PM's own token so Birdview's history and permissions are theirs.
+   - **Prerequisite: migrate to SES's Google Workspace** (rollout #5) so the
+     web app can be restricted to signed-in SES accounts and the signed-in
+     Google user can be trusted/matched to a Birdview user (by email).
+   - API mechanics are in `docs/birdview-api-notes.md`: end date via
+     read-modify-write `PUT /api/v2/tasks/{id}` (no PATCH for tasks);
+     hours left per assignee via `PUT /api/v2/tasks/assignees/{id}`
+     (`PersonalHoursLeft` — what the ETC cost uses); optional audit note via
+     `POST /api/v2/tasks/{id}/messages`. Several behaviours are unverified —
+     test on a single throwaway task before building the page.
+   - Also planned: log every change to a sheet tab (who/what/old/new/when),
+     only end date + hours left are editable, no deletes.
+
+## Reference docs
+
+- `docs/birdview-openapi-v2.json` — full Birdview API v2 OpenAPI spec
+  (exported 2026-09-29). Check it before assuming an endpoint or field exists.
+- `docs/birdview-api-notes.md` — summary of the endpoints this project reads
+  today and the write endpoints for item 7, with what's still unverified.
 
 ## Syncing with Apps Script (clasp)
 
