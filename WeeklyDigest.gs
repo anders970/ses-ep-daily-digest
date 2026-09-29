@@ -86,10 +86,10 @@ function formatTaskEndDate_(endDate) {
 
 // One task-list section:
 //   Project Name (link)
-//   └ Task Name (link) (YYYY-MM-DD end date, if set)
+//   └ Task Name (link) (YYYY-MM-DD end date, if showEndDates and set)
 //   └ (X more tasks)
 // Projects are listed alphabetically; tasks keep the order they were passed in.
-function buildWeeklyTaskSectionHtml_(title, rows) {
+function buildWeeklyTaskSectionHtml_(title, rows, showEndDates) {
   var html = '<h3>' + title + '</h3>';
   if (rows.length === 0) return html + '<p style="color:#888;">None.</p>';
 
@@ -101,7 +101,7 @@ function buildWeeklyTaskSectionHtml_(title, rows) {
       html += '<div style="margin-top:8px;"><a href="' + buildProjectUrl_(projectId) + '"><strong>' +
         escapeHtml_(group.projectName) + '</strong></a></div>';
       group.tasks.slice(0, WEEKLY_MAX_TASKS_PER_PROJECT).forEach(function(row) {
-        var endDate = formatTaskEndDate_(row.EndDate);
+        var endDate = showEndDates ? formatTaskEndDate_(row.EndDate) : '';
         html += '<div style="margin-left:12px;">&#9492; <a href="' + row.TaskUrl + '">' + escapeHtml_(row.TaskName) + '</a>' +
           (endDate ? ' (' + endDate + ')' : '') + '</div>';
       });
@@ -116,9 +116,9 @@ function buildWeeklyTaskSectionHtml_(title, rows) {
 function buildWeeklyDigestEmailHtml_(pmName, bothRows, noHoursLeftRows, overdueRows, profitSummary) {
   var html = '<p>Hi ' + pmName + ',</p><p>Here\'s your weekly project status digest:</p>';
 
-  html += buildWeeklyTaskSectionHtml_('&#9888;&#65039; Open tasks with 0 hours left AND an overdue end date', bothRows);
-  html += buildWeeklyTaskSectionHtml_('&#128308; Open tasks with 0 hours left', noHoursLeftRows);
-  html += buildWeeklyTaskSectionHtml_('&#128197; Open tasks with an overdue end date', overdueRows);
+  html += buildWeeklyTaskSectionHtml_('&#9888;&#65039; Open tasks with 0 hours left AND an overdue end date', bothRows, true);
+  html += buildWeeklyTaskSectionHtml_('&#128308; Open tasks with 0 hours left', noHoursLeftRows, false);
+  html += buildWeeklyTaskSectionHtml_('&#128197; Open tasks with an overdue end date', overdueRows, true);
 
   if (profitSummary.length > 0) {
     html += '<h3>&#128200; Expected profitability standing</h3><ul>';

@@ -173,7 +173,7 @@ each grouped by project (projects alphabetical):
 Format per project:
 ```
 Project Name        (link to EP project)
-└ Task Name (YYYY-MM-DD)   (link to EP task; end date in brackets, omitted if none)
+└ Task Name (YYYY-MM-DD)   (link to EP task; end date shown in the two overdue lists only)
 └ Task Name (YYYY-MM-DD)
 └ (X more tasks)    (when a project has > WEEKLY_MAX_TASKS_PER_PROJECT (2))
 ```
