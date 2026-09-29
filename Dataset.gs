@@ -5,7 +5,7 @@
 
 // ====== DATASET BUILD (one row per open leaf task) ======
 
-// Single pass over all projects producing both the task rows and PhaseTrial.gs's
+// Single pass over all projects producing both the task rows and PhaseAlerts.gs's
 // phase rows, so each project's tasks/time logs are only fetched once per night.
 function buildNightlyData_() {
   var projects = getOpenFlatFeeProjects_();
@@ -48,7 +48,7 @@ function buildNightlyData_() {
       });
     });
 
-    phaseRows = phaseRows.concat(buildPhaseRowsForProject_(project, pmName, allTasks, hoursMap)); // PhaseTrial.gs
+    phaseRows = phaseRows.concat(buildPhaseRowsForProject_(project, pmName, allTasks, hoursMap)); // PhaseAlerts.gs
   });
 
   Logger.log('Built ' + rows.length + ' task rows and ' + phaseRows.length + ' phase rows across ' + projects.length + ' projects.');

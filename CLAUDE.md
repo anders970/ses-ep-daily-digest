@@ -37,10 +37,10 @@ time), since file load order isn't something to rely on.
 | `Birdview.gs` | OAuth (`authorize`, `authCallback`, `resetBirdviewAuth`), request/paging helpers, project/PM/user-rate lookups, task/hours/assignee helpers, URL builders. |
 | `Ledger.gs` | Ledger spreadsheet access (URL hardcoded in `getLedgerSpreadsheet_()`), ledger backfill/daily update, `calculateExpectedProfitPercent_`. |
 | `Dataset.gs` | `buildNightlyData_()` (single pass → task rows + phase rows), `buildTaskFlags_`, all Drive snapshot helpers. |
-| `DailyAlerts.gs` | Profit-drop + hours-exceeded detection, shared email helpers/sections, the "[Current]" urgent email builder. |
+| `DailyAlerts.gs` | Profit-drop + hours-exceeded detection, shared email helpers (`escapeHtml_`, `sendDigestEmail_`), the single daily urgent email (one section per candidate alert rule) and its stage-2 orchestrator `sendDailyUrgentAlertsFromSnapshot_()`. |
+| `PhaseAlerts.gs` | Phase aggregation (built during the nightly build), `PhaseThresholdNotified` tracking, `findPhasesOverThreshold_` — feeds the phase section of the daily urgent email. |
 | `WeeklyDigest.gs` | Monday digest: the three task lists (0 hours left + overdue / 0 hours left / overdue), profit summary, email. |
-| `PhaseTrial.gs` | A/B trial: phase aggregation + tracking + "[Trial: +Phases]" email, and `runDailyUrgentComparison()` — the stage-2 orchestrator that sends BOTH urgent emails. Once the trial is decided, fold the winner into `DailyAlerts.gs` and delete this file. |
-| `Tests.gs` | Manual-only helpers: `testNightlyBuild`, `testDailyUrgentComparison`, `testWeeklyDigest`, `verifyExpectedProfitPercent`, `printSesPmLookup`, the TESTING-ONLY tracking reset. |
+| `Tests.gs` | Manual-only helpers: `testNightlyBuild`, `testDailyUrgentAlerts`, `testWeeklyDigest`, `verifyExpectedProfitPercent`, `printSesPmLookup`, the TESTING-ONLY tracking reset. |
 | `appsscript.json` | Manifest. Declares the `OAuth2` library dependency (Apps Script "OAuth2 for Apps Script") used for the Birdview Authorization Code Grant flow. Time zone `America/Vancouver`. |
 
 ## Setup checklist (fresh environment)
@@ -76,7 +76,7 @@ snapshot, so no execution both builds data and sends email):
 | Trigger | When | Does |
 |---|---|---|
 | `runNightlyDigest` | ~2am, skips Sat/Sun | ledger update + `buildNightlyData_()` → saves `phase-snapshot-<date>.json` then `digest-snapshot-<date>.json` (task snapshot saved LAST = "build finished" marker). No email. |
-| `runNightlyAlerts` | ~4am, skips Sat/Sun | reads today's snapshots → `runDailyUrgentComparison()` ([Current] + [Trial: +Phases] emails). No Birdview calls. |
+| `runNightlyAlerts` | ~4am, skips Sat/Sun | reads today's snapshots → `sendDailyUrgentAlertsFromSnapshot_()` (one urgent email per PM, one section per alert rule). No Birdview calls. |
 | `runWeeklyDigest` | ~6am Mondays | reads today's task snapshot → weekly emails. No Birdview or Gemini calls, no ledger update. |
 
 Every trigger entry point runs inside `runWithErrorAlert_()`, which emails
@@ -84,7 +84,7 @@ Every trigger entry point runs inside `runWithErrorAlert_()`, which emails
 shows Failed). Stages 2/3 use `requireTodaysSnapshot_()`, which emails
 `ADMIN_EMAIL` if the build stage didn't finish (this also covers a hard
 execution timeout, which can't be caught). Manual recovery: run
-`testNightlyBuild()`, then `testDailyUrgentComparison()` /
+`testNightlyBuild()`, then `testDailyUrgentAlerts()` /
 `testWeeklyDigest()`.
 
 ## Birdview / EasyProjects API facts (hard-won, don't re-derive)
@@ -105,7 +105,7 @@ execution timeout, which can't be caught). Manual recovery: run
 - Closed task status = ID 1 (`COMPLETED_TASK_STATUS_IDS`).
 - Tasks: `HasChild` = true means a parent/container task — hours are never
   logged directly on these, only on leaf tasks. `ParentId` is used both for
-  breadcrumb display and phase aggregation (PhaseTrial.gs walks up to the
+  breadcrumb display and phase aggregation (PhaseAlerts.gs walks up to the
   top-level ancestor).
 - Time log `Cost` field is unreliable/empty via the API — always compute
   cost manually as `Duration * InternalRate` (verified accurate to $0.44
@@ -147,18 +147,32 @@ Expected Profit % = (EAC billable − EAC cost) / EAC billable × 100
 
 ## Alert design
 
-**Daily "urgent" email** (the "[Current]" half of `runDailyUrgentComparison`
-in PhaseTrial.gs, built by `buildDailyUrgentEmailHtml_` in DailyAlerts.gs) — fires only for
-BRAND-NEW occurrences, no Gemini call, compact one-line formatting:
-1. A task's actual hours have newly exceeded its ORIGINAL `EstimatedHours`
-   (fires once ever per task, via the `HoursExceededNotified` tracking
-   sheet — never re-fires), and only for tasks with
-   `EstimatedHours > MIN_ESTIMATED_HOURS_FOR_ALERT` (5) — small tasks are
-   excluded from this alert only (the weekly `OVER_ESTIMATE` flag still
-   fires for tasks of any size).
-2. A project's Expected Profit % has dropped by more than
-   `PROFIT_DROP_THRESHOLD` (2) percentage points since the most recent
+**Daily "urgent" email** (`sendDailyUrgentAlertsFromSnapshot_` /
+`buildDailyUrgentEmailHtml_` in DailyAlerts.gs) — ONE email per PM, subject
+"Urgent: Project Alerts - <date>", fires only for BRAND-NEW occurrences, no
+AI calls. It is being used to **evaluate candidate alert rules side by
+side**: each rule is its own section with a grey one-line description of
+exactly what triggers it, and an empty section shows "None today." (so a
+too-quiet rule is visible). The email is only sent when at least one
+section has items. Anders will pick which rules to keep; drop the rest.
+1. **Tasks over estimate** — a task's actual hours have newly exceeded its
+   ORIGINAL `EstimatedHours` (fires once ever per task, via the
+   `HoursExceededNotified` tracking sheet — never re-fires), and only for
+   tasks with `EstimatedHours > MIN_ESTIMATED_HOURS_FOR_ALERT` (5) — small
+   tasks are excluded from this alert only (the weekly `OVER_ESTIMATE` flag
+   still fires for tasks of any size).
+2. **Phases over threshold** (PhaseAlerts.gs) — aggregates hours up to each
+   project's level-1 "phase" tasks (only phases with
+   ≥`MIN_PHASE_ESTIMATED_HOURS` (20) estimated hours, alert threshold
+   ≥`PHASE_THRESHOLD_PERCENT` (66)% of estimated hours used, excluding
+   Closed leaf tasks from the aggregate). Fires once ever per phase via
+   `PhaseThresholdNotified`.
+3. **Profit drops** — a project's Expected Profit % has dropped by more
+   than `PROFIT_DROP_THRESHOLD` (2) percentage points since the most recent
    snapshot.
+
+(Until 2026-09-29 this was two separate emails, "[Current]" and
+"[Trial: +Phases]"; they were merged into the one sectioned email.)
 
 **Weekly digest** (`runWeeklyDigest`, Monday mornings) — deterministic, no
 AI calls. Three mutually exclusive task lists (a task appears in only one),
@@ -183,15 +197,6 @@ project's current Expected Profit % and its week-over-week change (via a
 snapshot from ~7 days ago, ±2 day tolerance). Birdview names are free text —
 always pass them through `escapeHtml_()` when building email HTML.
 
-**Phase-level trial** (`PhaseTrial.gs`, A/B test) — separate, additive
-design being trialed alongside the daily urgent email without replacing it.
-Aggregates hours up to each project's level-1 "phase" tasks (only phases
-with ≥`MIN_PHASE_ESTIMATED_HOURS` (20) estimated hours, alert threshold
-≥`PHASE_THRESHOLD_PERCENT` (66)% of estimated hours used, excluding Closed
-leaf tasks from the aggregate). Fires once ever per phase via
-`PhaseThresholdNotified`. Sent as a second, clearly labeled
-"[Trial: +Phases]" email so Anders can compare it against the "[Current]"
-email side by side.
 
 ## Notification / snapshot patterns (why they're built this way)
 

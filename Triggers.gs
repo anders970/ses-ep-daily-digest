@@ -31,13 +31,13 @@ function runNightlyBuild_() {
 }
 
 // Stage 2 — fires nightly (~4am), after the build. Reads today's snapshots and
-// sends the [Current] + [Trial: +Phases] urgent emails (PhaseTrial.gs).
+// sends the daily urgent email (DailyAlerts.gs).
 function runNightlyAlerts() {
   if (isWeekend_()) {
     Logger.log('Weekend — skipping.');
     return;
   }
-  runWithErrorAlert_('runNightlyAlerts', runDailyUrgentComparison);
+  runWithErrorAlert_('runNightlyAlerts', sendDailyUrgentAlertsFromSnapshot_);
 }
 
 // Stage 3 (Mondays): reads the snapshot runNightlyDigest saved earlier this morning —

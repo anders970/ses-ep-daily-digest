@@ -1,7 +1,9 @@
 // ==========================================================================
-// DAILY URGENT ALERTS — detection + the "[Current]" email
+// DAILY URGENT ALERTS — detection + the single daily "urgent" email
 //
-// Sent by runDailyUrgentComparison (PhaseTrial.gs) during the phase trial.
+// The email has one section per candidate alert rule (tasks over estimate,
+// phases over threshold, profit drops) so the rules can be compared side by
+// side; drop the sections that don't earn their place once decided.
 // ==========================================================================
 
 
@@ -97,16 +99,24 @@ function sendDigestEmail_(pmName, subject, htmlBody) {
   Logger.log('Sent email to ' + pmName + ' (' + email + '): ' + subject);
 }
 
-// Shared by the [Current] and [Trial: +Phases] emails. Each returns '' when empty.
-function buildHoursExceededSectionHtml_(hoursExceededRows) {
+// One section per candidate alert rule: heading, a grey line stating exactly
+// what triggers it, then the items — or "None today." so a quiet rule is
+// visible too while the rules are being evaluated.
+function buildAlertSectionHtml_(title, ruleDescription, itemsHtml) {
+  return '<h3 style="margin-bottom:2px;">' + title + '</h3>' +
+    '<div style="color:#888;font-size:12px;margin-bottom:6px;">' + ruleDescription + '</div>' +
+    (itemsHtml || '<p style="color:#888;margin-top:0;">None today.</p>');
+}
+
+function buildHoursExceededItemsHtml_(hoursExceededRows) {
   if (hoursExceededRows.length === 0) return '';
-  var html = '<h3>&#9200; Tasks that have exceeded their estimated hours</h3><ul>';
+  var html = '<ul>';
   var byProject = groupRowsByProject_(hoursExceededRows);
   Object.keys(byProject).forEach(function(projectId) {
     var group = byProject[projectId];
-    html += '<li><strong>' + group.projectName + '</strong><ul>';
+    html += '<li><strong>' + escapeHtml_(group.projectName) + '</strong><ul>';
     group.tasks.forEach(function(row) {
-      html += '<li><a href="' + row.TaskUrl + '">' + row.ParentBreadcrumb + ' / ' + row.TaskName + '</a> (A: ' +
+      html += '<li><a href="' + row.TaskUrl + '">' + escapeHtml_(row.ParentBreadcrumb + ' / ' + row.TaskName) + '</a> (A: ' +
         row.ActualHours.toFixed(1) + ' h / E: ' + row.EstimatedHours.toFixed(1) + ' h)</li>';
     });
     html += '</ul></li>';
@@ -114,21 +124,86 @@ function buildHoursExceededSectionHtml_(hoursExceededRows) {
   return html + '</ul>';
 }
 
-function buildProfitDropsSectionHtml_(profitDrops) {
+function buildPhasesOverThresholdItemsHtml_(phases) {
+  if (phases.length === 0) return '';
+  var html = '<ul>';
+  phases.forEach(function(phase) {
+    var percent = (phase.ActualHours / phase.EstimatedHours) * 100;
+    html += '<li><a href="' + phase.PhaseUrl + '">' + escapeHtml_(phase.ProjectName + ' — ' + phase.PhaseName) + '</a> - ' +
+      percent.toFixed(0) + '% (' + phase.ActualHours.toFixed(1) + ' / ' + phase.EstimatedHours.toFixed(1) + ') of hours used.</li>';
+  });
+  return html + '</ul>';
+}
+
+function buildProfitDropsItemsHtml_(profitDrops) {
   if (profitDrops.length === 0) return '';
-  var html = '<h3>&#128201; Projects with a drop in expected profit</h3><ul>';
+  var html = '<ul>';
   profitDrops.forEach(function(drop) {
-    html += '<li><a href="' + buildProjectUrl_(drop.projectId) + '">' + drop.projectName + '</a> (' +
+    html += '<li><a href="' + buildProjectUrl_(drop.projectId) + '">' + escapeHtml_(drop.projectName) + '</a> (' +
       drop.yesterdayPercent.toFixed(1) + '% &rarr; ' + drop.todayPercent.toFixed(1) + '%)</li>';
   });
   return html + '</ul>';
 }
 
-function buildDailyUrgentEmailHtml_(pmName, hoursExceededRows, profitDrops) {
+function buildDailyUrgentEmailHtml_(pmName, hoursExceededRows, phasesOverThreshold, profitDrops) {
   var html = '<p>Hi ' + pmName + ',</p><p>Here are today\'s urgent project alerts:</p>';
 
-  html += buildHoursExceededSectionHtml_(hoursExceededRows);
-  html += buildProfitDropsSectionHtml_(profitDrops);
-  html += '<p style="color:#888;font-size:12px;">Automated alert from the Birdview Daily Digest trial.</p>';
+  html += buildAlertSectionHtml_('&#9200; Tasks that have exceeded their estimated hours',
+    'Fires once per task when logged hours first pass the task\'s original estimate (tasks estimated over ' +
+      MIN_ESTIMATED_HOURS_FOR_ALERT + ' h only).',
+    buildHoursExceededItemsHtml_(hoursExceededRows));
+  html += buildAlertSectionHtml_('&#128202; Project phases at ' + PHASE_THRESHOLD_PERCENT + '%+ of estimated hours',
+    'Fires once per phase (top-level task with ' + MIN_PHASE_ESTIMATED_HOURS + '+ estimated hours) when open tasks under it have used ' +
+      PHASE_THRESHOLD_PERCENT + '% or more of their estimated hours.',
+    buildPhasesOverThresholdItemsHtml_(phasesOverThreshold));
+  html += buildAlertSectionHtml_('&#128201; Projects with a drop in expected profit',
+    'Fires when a project\'s Expected Profit % falls by more than ' + PROFIT_DROP_THRESHOLD +
+      ' percentage points since the previous nightly snapshot.',
+    buildProfitDropsItemsHtml_(profitDrops));
+
+  html += '<p style="color:#888;font-size:12px;">Automated alert from the Birdview Daily Digest trial. ' +
+    'Each section is a candidate alert rule being evaluated.</p>';
   return html;
+}
+
+
+// ====== ORCHESTRATION (stage 2 — runNightlyAlerts) ======
+
+// Reads the snapshots runNightlyDigest saved earlier tonight — no Birdview
+// fetching here. Sends one email per PM with every candidate alert rule as its
+// own section, only when at least one section has something in it.
+function sendDailyUrgentAlertsFromSnapshot_() {
+  var todayRows = requireTodaysSnapshot_(TASK_SNAPSHOT_PREFIX, 'runNightlyAlerts');
+  if (!todayRows) return;
+  var phaseRows = requireTodaysSnapshot_(PHASE_SNAPSHOT_PREFIX, 'runNightlyAlerts');
+  if (!phaseRows) return;
+
+  var previousRows = getMostRecentPastSnapshot_() || [];
+  var hoursExceeded = findHoursExceededTasks_(todayRows);
+  var phasesOverThreshold = findPhasesOverThreshold_(phaseRows); // PhaseAlerts.gs
+  var profitDrops = findProfitabilityDrops_(todayRows, previousRows);
+
+  var pmSet = {};
+  hoursExceeded.forEach(function(row) { pmSet[row.SES_PM] = true; });
+  phasesOverThreshold.forEach(function(phase) { pmSet[phase.SES_PM] = true; });
+  profitDrops.forEach(function(drop) { pmSet[drop.pm] = true; });
+
+  var notifiedTaskIds = [];
+  var notifiedPhaseIds = [];
+
+  Object.keys(pmSet).forEach(function(pmName) {
+    if (!getPmEmail_(pmName)) return; // not in the trial yet — don't mark their tasks/phases as notified
+    var pmHoursExceeded = hoursExceeded.filter(function(row) { return row.SES_PM === pmName; });
+    var pmPhases = phasesOverThreshold.filter(function(p) { return p.SES_PM === pmName; });
+    var pmProfitDrops = profitDrops.filter(function(d) { return d.pm === pmName; });
+
+    var emailBody = buildDailyUrgentEmailHtml_(pmName, pmHoursExceeded, pmPhases, pmProfitDrops);
+    sendDigestEmail_(pmName, 'Urgent: Project Alerts - ' + formatDateForFilename_(new Date()), emailBody);
+
+    pmHoursExceeded.forEach(function(row) { notifiedTaskIds.push(row.TaskId); });
+    pmPhases.forEach(function(phase) { notifiedPhaseIds.push(phase.PhaseTaskId); });
+  });
+
+  markTasksAsNotified_(notifiedTaskIds);
+  markPhasesAsNotified_(notifiedPhaseIds);
 }

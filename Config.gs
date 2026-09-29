@@ -10,7 +10,7 @@
 //     TimeLogDetail          — TimeEntryId | ProjectId | Cost | LastModificationDate
 //     LockedTotals           — ProjectId | LockedLaborCost | LockedThroughDate
 //     HoursExceededNotified  — TaskId | NotifiedDate
-//     PhaseThresholdNotified — TaskId | NotifiedDate   (used by PhaseTrial.gs)
+//     PhaseThresholdNotified — TaskId | NotifiedDate   (used by PhaseAlerts.gs)
 //   One-time manual runs:
 //     authorize()                   — approve Birdview access (Birdview.gs)
 //     backfillProfitabilityLedger() — seed the profitability ledger (Ledger.gs)
@@ -43,7 +43,7 @@ const WEEKLY_MAX_TASKS_PER_PROJECT = 2; // weekly digest lists this many tasks p
 const DIGEST_SNAPSHOT_FOLDER_NAME = 'Birdview Digest Snapshots';
 const SNAPSHOT_RETENTION_DAYS = 14;
 const TASK_SNAPSHOT_PREFIX = 'digest-snapshot-';
-const PHASE_SNAPSHOT_PREFIX = 'phase-snapshot-'; // phase rows for PhaseTrial.gs, saved alongside the task snapshot
+const PHASE_SNAPSHOT_PREFIX = 'phase-snapshot-'; // phase rows for PhaseAlerts.gs, saved alongside the task snapshot
 
 
 // ====== PEOPLE ======

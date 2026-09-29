@@ -6,13 +6,13 @@
 // ====== PIPELINE STAGES BY HAND ======
 
 // Stage 1 by hand (ignores the weekend skip). Run this first, then
-// testDailyUrgentComparison() / testWeeklyDigest(), which read its snapshots.
+// testDailyUrgentAlerts() / testWeeklyDigest(), which read its snapshots.
 function testNightlyBuild() {
   runNightlyBuild_();
 }
 
-function testDailyUrgentComparison() {
-  runDailyUrgentComparison();
+function testDailyUrgentAlerts() {
+  sendDailyUrgentAlertsFromSnapshot_();
 }
 
 function testWeeklyDigest() {
@@ -56,7 +56,7 @@ function printSesPmLookup() {
 // re-flags everything currently over threshold, as if for the first time.
 function clearNotifiedTrackingForTesting_() {
   writeRows_(getHoursExceededNotifiedSheet_(), []);
-  writeRows_(getPhaseThresholdNotifiedSheet_(), []); // lives in PhaseTrial.gs
+  writeRows_(getPhaseThresholdNotifiedSheet_(), []); // lives in PhaseAlerts.gs
   Logger.log('Cleared HoursExceededNotified and PhaseThresholdNotified — next run will re-flag everything currently over threshold.');
 }
 
