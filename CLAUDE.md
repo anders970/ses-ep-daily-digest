@@ -40,7 +40,7 @@ time), since file load order isn't something to rely on.
 | `DailyAlerts.gs` | Profit-drop + hours-exceeded detection, shared email helpers (`escapeHtml_`, `sendDigestEmail_`), the single daily urgent email (one section per candidate alert rule) and its stage-2 orchestrator `sendDailyUrgentAlertsFromSnapshot_()`. |
 | `PhaseAlerts.gs` | Phase aggregation (built during the nightly build), `PhaseThresholdNotified` tracking, `findPhasesOverThreshold_` — feeds the phase section of the daily urgent email. |
 | `WeeklyDigest.gs` | Monday digest: the three task lists (0 hours left + overdue / 0 hours left / overdue), profit summary, email. |
-| `Tests.gs` | Manual-only helpers: `testNightlyBuild`, `testDailyUrgentAlerts`, `testWeeklyDigest`, `verifyExpectedProfitPercent`, `printSesPmLookup`, the TESTING-ONLY tracking reset. |
+| `Tests.gs` | Manual-only helpers: `testNightlyBuild`, `testDailyUrgentAlerts`, `testWeeklyDigest`, `testLedgerRolloverAndIntegrity`, `verifyExpectedProfitPercent`, `printSesPmLookup`, the TESTING-ONLY tracking reset. |
 | `docs/` | Reference only (not pushed to Apps Script): Birdview API v2 OpenAPI spec + notes. See "Reference docs" below. |
 | `appsscript.json` | Manifest. Declares the `OAuth2` library dependency (Apps Script "OAuth2 for Apps Script") used for the Birdview Authorization Code Grant flow. Time zone `America/Vancouver`. |
 
@@ -236,18 +236,25 @@ always pass them through `escapeHtml_()` when building email HTML.
    - **Measured `testNightlyBuild()` timings (Sep 28, 2026):** ledger update
      44 s (109 projects, 2,833 time logs in the active window); dataset build
      2 m 39 s (956 task rows + 234 phase rows); snapshots 6 s — **~3.5 min
-     total**, vs. the 6-min per-execution limit. The ledger window keeps
-     growing until rollover (#3) is built, so watch this number.
+     total**, vs. the 6-min per-execution limit. Rollover (#3) now caps the
+     ledger window at ~45 days, so the ledger step should shrink, not grow.
    - If a "[Birdview Digest] … failed" email ever arrives, its error text is
      the next thing to fix.
 2. **Watchdog** — partly covered: stages 2/3 email Anders if today's
    snapshot is missing. Not covered: stage 2/3 themselves timing out (they're
    now lightweight, so unlikely), or a trigger never firing at all.
-3. **Ledger "rollover" was never built.** `dailyUpdateProfitabilityLedger()`
-   currently only ever grows `TimeLogDetail` — it never folds aged-out rows
-   into `LockedTotals` and advances `LockedThroughDate`. Over time the
-   detail sheet and the per-run query window will keep growing. Needs a
-   periodic (e.g. weekly) rollover step.
+3. *(Resolved 2026-09-30: ledger rollover built.)* `dailyUpdateProfitabilityLedger()`
+   now rolls over nightly: entries dated before today − `LOCK_BUFFER_DAYS`
+   are added to `LockedLaborCost` and `LockedThroughDate` advances, so the
+   fetch window and `TimeLogDetail` stay at ~45 days. Lock dates are
+   compared as `yyyy-MM-dd` day strings (`toLockDay_`) — never timestamps —
+   so time-zone handling of Birdview's `EntryDateFrom` can't drop boundary
+   entries; Sheets turns written day strings into Dates, which `toLockDay_`
+   normalizes on read (as it does the old ISO-timestamp values). Verify on
+   live data with `testLedgerRolloverAndIntegrity()` (Tests.gs), which runs
+   the update then compares locked + detail cost to a full Birdview re-sum
+   for 30 projects. First nightly run after deploy folds the backlog in one
+   go (expect a large "rolled into LockedTotals" count in the log).
 4. *(Resolved 2026-09-28: the weekly digest no longer calls Gemini.)*
 5. **Rollout plan**: extend `PM_EMAIL_MAP` from just Anders to all 13 PMs
    (ID↔name table above) once the trial is validated and the missing-email

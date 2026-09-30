@@ -19,6 +19,15 @@ function testWeeklyDigest() {
   sendWeeklyDigestFromSnapshot_();
 }
 
+// Runs the nightly ledger update (including rollover) and then checks the
+// ledger against a full re-sum of Birdview time logs for the first N projects.
+// Both steps in one execution, so same-day time entries can't cause false
+// mismatches. Full-history fetches are slow — keep N modest (~6-min limit).
+function testLedgerRolloverAndIntegrity() {
+  dailyUpdateProfitabilityLedger();
+  checkLedgerIntegrity_(30);
+}
+
 function testBuildDatasetSmall() {
   var rows = buildNightlyData_().taskRows;
   Logger.log(JSON.stringify(rows.slice(0, 5), null, 2));
