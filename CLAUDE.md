@@ -253,8 +253,10 @@ always pass them through `escapeHtml_()` when building email HTML.
    normalizes on read (as it does the old ISO-timestamp values). Verify on
    live data with `testLedgerRolloverAndIntegrity()` (Tests.gs), which runs
    the update then compares locked + detail cost to a full Birdview re-sum
-   for 30 projects. First nightly run after deploy folds the backlog in one
-   go (expect a large "rolled into LockedTotals" count in the log).
+   for 30 projects. **Verified live 2026-09-30:** first run rolled 1,464
+   time logs into LockedTotals (locked through 2026-08-15), active window
+   dropped from 2,833 to 1,504 logs, ledger step 35 s (was 44 s), and the
+   integrity check found 0 mismatches across 30 projects.
 4. *(Resolved 2026-09-28: the weekly digest no longer calls Gemini.)*
 5. **Rollout plan**: extend `PM_EMAIL_MAP` from just Anders to all 13 PMs
    (ID↔name table above) once the trial is validated and the missing-email
