@@ -167,6 +167,31 @@ function buildDailyUrgentEmailHtml_(pmName, hoursExceededRows, phasesOverThresho
 }
 
 
+// ====== ROLLOUT / MIGRATION: SEED THE "FIRE ONCE" TRACKING ======
+
+// One-time, WITHOUT sending email: marks every task and phase that is over
+// its threshold right now (for ALL PMs) as already notified. Run it after
+// testNightlyBuild() on a fresh deployment, and right before adding PMs to
+// PM_EMAIL_MAP — otherwise each PM's first urgent email lists every task
+// that has EVER gone over estimate (tasks of unmapped PMs are deliberately
+// never marked, so they'd all fire at once). Afterwards only genuinely new
+// occurrences alert. Profit drops need no seeding (they compare to the
+// previous snapshot). Safe to re-run: only adds IDs not already marked.
+function seedNotifiedTracking() {
+  var todayRows = loadTodaysSnapshot_(TASK_SNAPSHOT_PREFIX);
+  var phaseRows = loadTodaysSnapshot_(PHASE_SNAPSHOT_PREFIX);
+  if (!todayRows || !phaseRows) {
+    throw new Error('No snapshot for today — run testNightlyBuild() first.');
+  }
+  var taskIds = findHoursExceededTasks_(todayRows).map(function(row) { return row.TaskId; });
+  var phaseIds = findPhasesOverThreshold_(phaseRows).map(function(phase) { return phase.PhaseTaskId; });
+  markTasksAsNotified_(taskIds);
+  markPhasesAsNotified_(phaseIds);
+  Logger.log('Seeded tracking without sending email: ' + taskIds.length + ' tasks over estimate, ' +
+    phaseIds.length + ' phases over threshold marked as already notified.');
+}
+
+
 // ====== ORCHESTRATION (stage 2 — runNightlyAlerts) ======
 
 // Reads the snapshots runNightlyDigest saved earlier tonight — no Birdview

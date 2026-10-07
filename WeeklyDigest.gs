@@ -45,6 +45,41 @@ function sendWeeklyDigestFromSnapshot_() {
     var emailBody = buildWeeklyDigestEmailHtml_(pmName, both, noHoursLeft, overdue, profitSummary);
     sendDigestEmail_(pmName, 'Weekly Project Digest - Week of ' + formatDateForFilename_(new Date()), emailBody);
   });
+
+  sendCoverageReport_(todayRows);
+}
+
+// Mondays, to ADMIN_EMAIL: open projects that no PM digest covers — either no
+// "SES PM" set in Birdview, or a PM name with no address in PM_EMAIL_MAP
+// (e.g. a PM added in Birdview after rollout). Sent only when there's
+// something to report. (Only projects with at least one open leaf task appear
+// in the snapshot, so a project with no open tasks isn't listed.)
+function sendCoverageReport_(todayRows) {
+  var projects = getProjectProfitSnapshot_(todayRows); // one entry per project: { projectName, pm, ... }
+  var unassigned = [];
+  var unmappedByPm = {};
+  Object.keys(projects).forEach(function(projectId) {
+    var p = projects[projectId];
+    var line = '  - ' + p.projectName + ' — ' + buildProjectUrl_(projectId);
+    if (p.pm === UNASSIGNED_PM) unassigned.push(line);
+    else if (!getPmEmail_(p.pm)) (unmappedByPm[p.pm] = unmappedByPm[p.pm] || []).push(line);
+  });
+
+  var unmappedPms = Object.keys(unmappedByPm).sort();
+  if (unassigned.length === 0 && unmappedPms.length === 0) return;
+
+  var body = 'These open Flat Fee projects are not covered by any digest email.\n';
+  if (unassigned.length > 0) {
+    body += '\nNo "SES PM" set in Birdview (' + unassigned.length + ') — set the SES PM field on the project:\n' + unassigned.join('\n') + '\n';
+  }
+  if (unmappedPms.length > 0) {
+    body += '\nPMs with no email address in PM_EMAIL_MAP (Config.gs) — add them to start their digests:\n';
+    unmappedPms.forEach(function(pm) {
+      body += '  ' + pm + ' (' + unmappedByPm[pm].length + ' project' + (unmappedByPm[pm].length === 1 ? '' : 's') + ')\n';
+    });
+  }
+  var uncovered = unassigned.length + unmappedPms.reduce(function(n, pm) { return n + unmappedByPm[pm].length; }, 0);
+  notifyAdmin_('[Birdview Digest] Coverage report: ' + uncovered + ' project' + (uncovered === 1 ? '' : 's') + ' not in any digest', body);
 }
 
 

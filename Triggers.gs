@@ -19,6 +19,7 @@ function runNightlyDigest() {
     Logger.log('Weekend — skipping. Monday\'s run will automatically cover everything since Friday.');
     return;
   }
+  checkPipelineHealth_();
   runWithErrorAlert_('runNightlyDigest', runNightlyBuild_);
 }
 
@@ -57,9 +58,11 @@ function isWeekend_() {
 // Wraps a trigger entry point so any thrown error is emailed to the admin, then
 // re-thrown so the Executions panel still shows it as Failed. (A hard execution
 // timeout can't be caught here — requireTodaysSnapshot_ covers that case.)
+// Also records the time of each successful run for checkPipelineHealth_.
 function runWithErrorAlert_(name, fn) {
   try {
     fn();
+    PropertiesService.getScriptProperties().setProperty(LAST_SUCCESS_PROPERTY_PREFIX + name, new Date().toISOString());
   } catch (e) {
     notifyAdmin_('[Birdview Digest] ' + name + ' failed', name + ' threw an error:\n\n' + (e && e.stack ? e.stack : e));
     throw e;
@@ -76,12 +79,54 @@ function notifyAdmin_(subject, body) {
 }
 
 
+// ====== WATCHDOG ======
+
+// Runs at the start of every weekday build (runNightlyDigest). Catches the
+// failures nothing else reports: a trigger that was deleted/disabled, or a
+// later stage that stopped running entirely (its own error alerts can't fire
+// if it never starts). The build stage itself is covered by the
+// missing-snapshot alerts in stages 2/3. Never throws — it must not block
+// the build.
+function checkPipelineHealth_() {
+  try {
+    var problems = [];
+
+    var handlers = ScriptApp.getProjectTriggers().map(function(t) { return t.getHandlerFunction(); });
+    PIPELINE_TRIGGERS.forEach(function(name) {
+      if (handlers.indexOf(name) === -1) problems.push('No trigger exists for ' + name + ' — run setupTriggers().');
+    });
+
+    var props = PropertiesService.getScriptProperties();
+    var now = new Date();
+    Object.keys(PIPELINE_MAX_DAYS_SINCE_SUCCESS).forEach(function(name) {
+      var last = props.getProperty(LAST_SUCCESS_PROPERTY_PREFIX + name);
+      if (!last) {
+        // First run after this check was deployed — start the clock instead of alerting.
+        props.setProperty(LAST_SUCCESS_PROPERTY_PREFIX + name, now.toISOString());
+        return;
+      }
+      var daysSince = (now - new Date(last)) / (1000 * 60 * 60 * 24);
+      if (daysSince > PIPELINE_MAX_DAYS_SINCE_SUCCESS[name]) {
+        problems.push(name + ' has not completed successfully since ' + last.slice(0, 10) +
+          ' (' + daysSince.toFixed(1) + ' days). Check the Executions panel.');
+      }
+    });
+
+    if (problems.length > 0) {
+      notifyAdmin_('[Birdview Digest] Pipeline health check: ' + problems.length + ' problem(s)',
+        problems.map(function(p) { return '- ' + p; }).join('\n'));
+    }
+  } catch (e) {
+    Logger.log('Pipeline health check itself failed: ' + e);
+  }
+}
+
+
 // ====== TRIGGER SETUP ======
 
 function setupTriggers() {
-  var handlers = ['runNightlyDigest', 'runNightlyAlerts', 'runWeeklyDigest'];
   ScriptApp.getProjectTriggers().forEach(function(trigger) {
-    if (handlers.indexOf(trigger.getHandlerFunction()) !== -1) {
+    if (PIPELINE_TRIGGERS.indexOf(trigger.getHandlerFunction()) !== -1) {
       ScriptApp.deleteTrigger(trigger);
     }
   });
@@ -106,6 +151,19 @@ function setupTriggers() {
     .create();
 
   Logger.log('Triggers created.');
+}
+
+// Deletes this project's pipeline triggers. Run in the OLD project after the
+// migrated one is live, so PMs don't get every email twice.
+function removeTriggers() {
+  var removed = 0;
+  ScriptApp.getProjectTriggers().forEach(function(trigger) {
+    if (PIPELINE_TRIGGERS.indexOf(trigger.getHandlerFunction()) !== -1) {
+      ScriptApp.deleteTrigger(trigger);
+      removed++;
+    }
+  });
+  Logger.log('Removed ' + removed + ' pipeline trigger(s).');
 }
 
 function listTriggers() {

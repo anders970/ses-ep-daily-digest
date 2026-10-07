@@ -10,10 +10,44 @@
 
 var ledgerSpreadsheetCache_ = null; // opened once per execution
 
+// The trial deployment's original sheet. Used only when the
+// LEDGER_SPREADSHEET_ID Script Property isn't set (setupLedgerSpreadsheet sets it).
+var LEGACY_LEDGER_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1_zIy-0HMHkAh2v01IzbZizEqVqoA9VSbWrUYEMxjdsA/edit?usp=sharing';
+
 function getLedgerSpreadsheet_() {
-  var SHEET_URL = 'https://docs.google.com/spreadsheets/d/1_zIy-0HMHkAh2v01IzbZizEqVqoA9VSbWrUYEMxjdsA/edit?usp=sharing';
-  if (!ledgerSpreadsheetCache_) ledgerSpreadsheetCache_ = SpreadsheetApp.openByUrl(SHEET_URL);
+  if (!ledgerSpreadsheetCache_) {
+    var id = PropertiesService.getScriptProperties().getProperty('LEDGER_SPREADSHEET_ID');
+    ledgerSpreadsheetCache_ = id ? SpreadsheetApp.openById(id) : SpreadsheetApp.openByUrl(LEGACY_LEDGER_SHEET_URL);
+  }
   return ledgerSpreadsheetCache_;
+}
+
+// One-time, on a fresh deployment (e.g. the SES Workspace migration): creates
+// the ledger spreadsheet with all four tabs and headers in the running
+// account's Drive, and points the script at it via the LEDGER_SPREADSHEET_ID
+// Script Property. Refuses to run if that property is already set, so it
+// can't silently replace a live ledger. Follow with backfillProfitabilityLedger().
+function setupLedgerSpreadsheet() {
+  var props = PropertiesService.getScriptProperties();
+  if (props.getProperty('LEDGER_SPREADSHEET_ID')) {
+    throw new Error('LEDGER_SPREADSHEET_ID is already set — delete that Script Property first if you really want a new ledger.');
+  }
+  var tabs = {
+    TimeLogDetail: ['TimeEntryId', 'ProjectId', 'Cost', 'LastModificationDate'],
+    LockedTotals: ['ProjectId', 'LockedLaborCost', 'LockedThroughDate'],
+    HoursExceededNotified: ['TaskId', 'NotifiedDate'],
+    PhaseThresholdNotified: ['TaskId', 'NotifiedDate']
+  };
+  var spreadsheet = SpreadsheetApp.create('Birdview Digest Ledger');
+  var first = true;
+  Object.keys(tabs).forEach(function(name) {
+    var sheet = first ? spreadsheet.getSheets()[0].setName(name) : spreadsheet.insertSheet(name);
+    first = false;
+    sheet.getRange(1, 1, 1, tabs[name].length).setValues([tabs[name]]).setFontWeight('bold');
+    sheet.setFrozenRows(1);
+  });
+  props.setProperty('LEDGER_SPREADSHEET_ID', spreadsheet.getId());
+  Logger.log('Created ledger spreadsheet: ' + spreadsheet.getUrl() + ' — now run backfillProfitabilityLedger().');
 }
 
 function getTimeLogDetailSheet_() { return getLedgerSpreadsheet_().getSheetByName('TimeLogDetail'); }

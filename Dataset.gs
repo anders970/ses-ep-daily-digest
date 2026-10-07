@@ -18,7 +18,7 @@ function buildNightlyData_() {
   projects.forEach(function(project) {
     var projectId = project.ProjectId;
     var pmId = project.CustomFields ? project.CustomFields[CUSTOM_FIELD_SES_PM] : null;
-    var pmName = pmLookup[pmId] || 'Unassigned';
+    var pmName = pmLookup[pmId] || UNASSIGNED_PM;
 
     var allTasks = getAllTasksForProject_(projectId);
     var taskLookup = buildTaskLookup_(allTasks);

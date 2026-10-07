@@ -46,8 +46,18 @@ const TASK_SNAPSHOT_PREFIX = 'digest-snapshot-';
 const PHASE_SNAPSHOT_PREFIX = 'phase-snapshot-'; // phase rows for PhaseAlerts.gs, saved alongside the task snapshot
 
 
+// ====== PIPELINE / WATCHDOG ======
+
+const PIPELINE_TRIGGERS = ['runNightlyDigest', 'runNightlyAlerts', 'runWeeklyDigest'];
+// Max days since a stage last completed before the watchdog alerts. Checked
+// on weekday mornings; 4 covers a long weekend (Fri -> Tue), 8 covers a week.
+const PIPELINE_MAX_DAYS_SINCE_SUCCESS = { runNightlyAlerts: 4, runWeeklyDigest: 8 };
+const LAST_SUCCESS_PROPERTY_PREFIX = 'LAST_SUCCESS_'; // Script Property per stage, ISO timestamp
+
+
 // ====== PEOPLE ======
 
+const UNASSIGNED_PM = 'Unassigned'; // SES_PM value for projects with no "SES PM" set in Birdview
 const ADMIN_EMAIL = 'anders@theworks.pro'; // receives pipeline failure / missing-snapshot alerts
 const PM_EMAIL_MAP = {
   'Anders': 'anders@theworks.pro' // add more PMs here as the trial expands to the full team

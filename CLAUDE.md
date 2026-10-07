@@ -33,15 +33,15 @@ time), since file load order isn't something to rely on.
 | File | Contents |
 |---|---|
 | `Config.gs` | All shared constants (Birdview IDs, thresholds, snapshot names), `ADMIN_EMAIL`, `PM_EMAIL_MAP` + `getPmEmail_`. Setup checklist in the header. |
-| `Triggers.gs` | The staged pipeline entry points (`runNightlyDigest`, `runNightlyAlerts`, `runWeeklyDigest`), `runWithErrorAlert_` / `notifyAdmin_`, `setupTriggers`, `listTriggers`. |
+| `Triggers.gs` | The staged pipeline entry points (`runNightlyDigest`, `runNightlyAlerts`, `runWeeklyDigest`), `runWithErrorAlert_` / `notifyAdmin_`, the `checkPipelineHealth_` watchdog, `setupTriggers`, `removeTriggers`, `listTriggers`. |
 | `Birdview.gs` | OAuth (`authorize`, `authCallback`, `resetBirdviewAuth`), request/paging helpers, project/PM/user-rate lookups, task/hours/assignee helpers, URL builders. |
-| `Ledger.gs` | Ledger spreadsheet access (URL hardcoded in `getLedgerSpreadsheet_()`), ledger backfill/daily update, `calculateExpectedProfitPercent_`. |
+| `Ledger.gs` | Ledger spreadsheet access (`LEDGER_SPREADSHEET_ID` Script Property, falling back to the trial sheet's URL), `setupLedgerSpreadsheet()`, ledger backfill/nightly update + rollover, integrity check, `calculateExpectedProfitPercent_`. |
 | `Dataset.gs` | `buildNightlyData_()` (single pass → task rows + phase rows), `buildTaskFlags_`, all Drive snapshot helpers. |
-| `DailyAlerts.gs` | Profit-drop + hours-exceeded detection, shared email helpers (`escapeHtml_`, `sendDigestEmail_`), the single daily urgent email (one section per candidate alert rule) and its stage-2 orchestrator `sendDailyUrgentAlertsFromSnapshot_()`. |
+| `DailyAlerts.gs` | Profit-drop + hours-exceeded detection, shared email helpers (`escapeHtml_`, `sendDigestEmail_`), the single daily urgent email (one section per candidate alert rule) and its stage-2 orchestrator `sendDailyUrgentAlertsFromSnapshot_()`, and `seedNotifiedTracking()` (rollout/migration). |
 | `PhaseAlerts.gs` | Phase aggregation (built during the nightly build), `PhaseThresholdNotified` tracking, `findPhasesOverThreshold_` — feeds the phase section of the daily urgent email. |
-| `WeeklyDigest.gs` | Monday digest: the three task lists (0 hours left + overdue / 0 hours left / overdue), profit summary, email. |
+| `WeeklyDigest.gs` | Monday digest: the three task lists (0 hours left + overdue / 0 hours left / overdue), profit summary, email; plus the admin "coverage report" (`sendCoverageReport_`). |
 | `Tests.gs` | Manual-only helpers: `testNightlyBuild`, `testDailyUrgentAlerts`, `testWeeklyDigest`, `testLedgerRolloverAndIntegrity`, `verifyExpectedProfitPercent`, `printSesPmLookup`, the TESTING-ONLY tracking reset. |
-| `docs/` | Reference only (not pushed to Apps Script): Birdview API v2 OpenAPI spec + notes. See "Reference docs" below. |
+| `docs/` | Reference only (not pushed to Apps Script): Birdview API v2 OpenAPI spec + notes, and the SES Workspace migration checklist. See "Reference docs" below. |
 | `appsscript.json` | Manifest. Declares the `OAuth2` library dependency (Apps Script "OAuth2 for Apps Script") used for the Birdview Authorization Code Grant flow. Time zone `America/Vancouver`. |
 
 ## Setup checklist (fresh environment)
@@ -53,15 +53,22 @@ Script editor — never commit these anywhere):
   off).
 - `GEMINI_API_KEY` — no longer used (the weekly digest stopped calling
   Gemini on 2026-09-28); safe to delete from Script Properties.
+- `LEDGER_SPREADSHEET_ID` — set automatically by `setupLedgerSpreadsheet()`.
+  If absent, the script falls back to the trial deployment's sheet URL
+  (`LEGACY_LEDGER_SHEET_URL` in Ledger.gs).
+- `LAST_SUCCESS_<stage>` — written automatically by `runWithErrorAlert_`
+  (ISO timestamp per stage), read by the watchdog. Don't edit.
 
-**Google Sheet** (the "ledger" spreadsheet, URL hardcoded in
-`getLedgerSpreadsheet_()`), with these tabs:
+**Google Sheet** (the "ledger" spreadsheet — create it with
+`setupLedgerSpreadsheet()` on a fresh deployment), with these tabs:
 - `TimeLogDetail` — TimeEntryId | ProjectId | Cost | LastModificationDate
 - `LockedTotals` — ProjectId | LockedLaborCost | LockedThroughDate
 - `HoursExceededNotified` — TaskId | NotifiedDate
 - `PhaseThresholdNotified` — TaskId | NotifiedDate
 
-**One-time manual runs** (via the Apps Script editor's Run dropdown):
+**One-time manual runs** (via the Apps Script editor's Run dropdown) — for a
+full move to a new account/Workspace follow `docs/migration-checklist.md`:
+0. `setupLedgerSpreadsheet()` — fresh deployment only.
 1. `authorize()` — logs an authorization URL; open it in the SAME Chrome
    window/Google account signed into the Apps Script editor (Birdview's own
    login can be a different account — only the Google/callback session
@@ -70,6 +77,8 @@ Script editor — never commit these anywhere):
    for all currently-open Flat Fee projects.
 3. `setupTriggers()` — installs the three time-based triggers. Re-run it
    whenever the trigger schedule in code changes.
+4. `seedNotifiedTracking()` — after `testNightlyBuild()`, before any PM is
+   added to `PM_EMAIL_MAP` (see "Notification / snapshot patterns").
 
 **Ongoing — staged pipeline** (each stage hands off via today's Drive
 snapshot, so no execution both builds data and sends email):
@@ -84,7 +93,15 @@ Every trigger entry point runs inside `runWithErrorAlert_()`, which emails
 `ADMIN_EMAIL` the error + stack trace and re-throws (so Executions still
 shows Failed). Stages 2/3 use `requireTodaysSnapshot_()`, which emails
 `ADMIN_EMAIL` if the build stage didn't finish (this also covers a hard
-execution timeout, which can't be caught). Manual recovery: run
+execution timeout, which can't be caught). The **watchdog**
+(`checkPipelineHealth_`, called at the start of every weekday
+`runNightlyDigest`) emails `ADMIN_EMAIL` if any of the three triggers is
+missing or if `runNightlyAlerts` / `runWeeklyDigest` haven't completed
+within `PIPELINE_MAX_DAYS_SINCE_SUCCESS` (4 / 8 days). It never throws. Not
+covered: ALL triggers deleted at once (nothing runs to notice). On Mondays
+the weekly stage also sends `ADMIN_EMAIL` a **coverage report** when any
+open project is in no digest (no "SES PM" set, or a PM missing from
+`PM_EMAIL_MAP`). Manual recovery: run
 `testNightlyBuild()`, then `testDailyUrgentAlerts()` /
 `testWeeklyDigest()`.
 
@@ -212,8 +229,11 @@ always pass them through `escapeHtml_()` when building email HTML.
   the hand-off between pipeline stages and what day-over-day (profit drops)
   and week-over-week (weekly digest) comparisons are based on.
 - **PMs not in `PM_EMAIL_MAP` are skipped entirely** by the alert/digest
-  senders, and their tasks/phases are NOT marked in the
-  "notified" sheets (so they still fire once that PM is added at rollout).
+  senders, and their tasks/phases are NOT marked in the "notified" sheets.
+  So adding a PM (or a fresh deployment's empty sheets) would make their
+  first urgent email list EVERY task that has ever gone over estimate —
+  **always run `seedNotifiedTracking()` first** (marks everything currently
+  over threshold, for all PMs, without sending email).
 - **Ledger sheets are read once per run** (`readLedgerCosts_()`, passed into
   `calculateExpectedProfitPercent_`) and the spreadsheet handle is cached
   per execution — don't reintroduce per-project sheet reads.
@@ -240,9 +260,10 @@ always pass them through `escapeHtml_()` when building email HTML.
      ledger window at ~45 days, so the ledger step should shrink, not grow.
    - If a "[Birdview Digest] … failed" email ever arrives, its error text is
      the next thing to fix.
-2. **Watchdog** — partly covered: stages 2/3 email Anders if today's
-   snapshot is missing. Not covered: stage 2/3 themselves timing out (they're
-   now lightweight, so unlikely), or a trigger never firing at all.
+2. *(Resolved 2026-10-07: watchdog built.)* `checkPipelineHealth_` (see
+   "Ongoing — staged pipeline") covers missing triggers and stages that stop
+   completing; missing snapshots were already covered. Only gap: every
+   trigger deleted at once.
 3. *(Resolved 2026-09-30: ledger rollover built.)* `dailyUpdateProfitabilityLedger()`
    now rolls over nightly: entries dated before today − `LOCK_BUFFER_DAYS`
    are added to `LockedLaborCost` and `LockedThroughDate` advances, so the
@@ -258,10 +279,15 @@ always pass them through `escapeHtml_()` when building email HTML.
    dropped from 2,833 to 1,504 logs, ledger step 35 s (was 44 s), and the
    integrity check found 0 mismatches across 30 projects.
 4. *(Resolved 2026-09-28: the weekly digest no longer calls Gemini.)*
-5. **Rollout plan**: extend `PM_EMAIL_MAP` from just Anders to all 13 PMs
-   (ID↔name table above) once the trial is validated and the missing-email
-   bug is fixed, then move the whole thing from Anders's personal Workspace
-   to SES's own Google Workspace.
+5. **Rollout / migration — NEXT.** Anders is happy with both emails
+   (2026-10-07). Follow `docs/migration-checklist.md`: move to SES's Google
+   Workspace (new project + Script ID, Birdview OAuth redirect URI,
+   `setupLedgerSpreadsheet` → backfill → `testNightlyBuild` →
+   `seedNotifiedTracking`), then add all 13 PMs to `PM_EMAIL_MAP`, then
+   `removeTriggers()` in the trial project. Open decision: whether
+   non-billable time on Flat Fee projects should count as labour cost (the
+   ledger only fetches `Billable: true` logs today; changing it needs a
+   re-backfill).
 6. `clearNotifiedTrackingForTesting_()` / `testClearNotifiedTracking()` in
    Tests.gs are TESTING ONLY — wipe both "notified" tracking sheets so a test
    run re-flags everything. Never call from a trigger or in production.
@@ -292,6 +318,8 @@ always pass them through `escapeHtml_()` when building email HTML.
   (exported 2026-09-29). Check it before assuming an endpoint or field exists.
 - `docs/birdview-api-notes.md` — summary of the endpoints this project reads
   today and the write endpoints for item 7, with what's still unverified.
+- `docs/migration-checklist.md` — step-by-step move to SES's Google
+  Workspace and PM rollout.
 
 ## Syncing with Apps Script (clasp)
 
