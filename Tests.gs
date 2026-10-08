@@ -50,6 +50,37 @@ function runVerify3656() {
   verifyExpectedProfitPercent(3656);
 }
 
+// Logs a task's billing type (by name), its project's billing type, and the
+// hours logged on it with their T&M value (Duration × Rate) — i.e. what a
+// task left on T&M inside a Flat Fee project adds to Birdview's EAC Billable.
+function printTaskBillingInfo(taskId) {
+  var task = birdviewGet_('/api/v2/tasks/' + taskId, {});
+  var project = birdviewGet_('/api/v2/projects/' + task.ProjectId, {});
+  var taskTypes = {};
+  (birdviewGet_('/api/v2/lists/billingtypes/task', {}).Items || []).forEach(function(t) { taskTypes[t.Id] = t.Name; });
+  var projectTypes = {};
+  (birdviewGet_('/api/v2/lists/billingtypes/project', {}).Items || []).forEach(function(t) { projectTypes[t.Id] = t.Name; });
+
+  var logs = birdviewGetAllPages_('/api/v2/timelogs', { TaskIds: taskId });
+  var hours = 0, billableHours = 0, tmValue = 0;
+  logs.forEach(function(log) {
+    hours += log.Duration || 0;
+    if (log.Billable) billableHours += log.Duration || 0;
+    tmValue += (log.Duration || 0) * (log.Rate || 0);
+  });
+
+  Logger.log('Task ' + taskId + ': "' + task.Name + '"  (status ID ' + task.TaskStatusId + (COMPLETED_TASK_STATUS_IDS.indexOf(task.TaskStatusId) !== -1 ? ' = Closed' : '') + ')');
+  Logger.log('  Task billing type:    ' + task.BillingType + ' = ' + (taskTypes[task.BillingType] || '?') +
+    '   (BillingAmount ' + task.BillingAmount + ', Budget ' + task.Budget + ')');
+  Logger.log('  Project ' + project.ProjectId + ' "' + project.Name + '" billing type: ' + project.BillingType + ' = ' + (projectTypes[project.BillingType] || '?'));
+  Logger.log('  Time logged: ' + logs.length + ' entries, ' + hours.toFixed(2) + ' h (' + billableHours.toFixed(2) + ' h billable), value at billing rates (Duration × Rate): $' + tmValue.toFixed(2));
+  Logger.log('  All task billing types: ' + JSON.stringify(taskTypes));
+}
+
+function runPrintTaskBillingInfo() {
+  printTaskBillingInfo(89006);
+}
+
 function printSesPmLookup() {
   var lookup = getSesPmLookup_();
   Object.keys(lookup).forEach(function(id) {
