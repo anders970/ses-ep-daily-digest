@@ -89,11 +89,18 @@ function groupRowsByProject_(rows) {
   return map;
 }
 
+// Sends only to PMs who have subscribed (getPmEmail_, Subscriptions.gs), and
+// appends the link to manage the subscription.
 function sendDigestEmail_(pmName, subject, htmlBody) {
   var email = getPmEmail_(pmName);
   if (!email) {
-    Logger.log('No email mapped for PM "' + pmName + '" — skipping send.');
+    Logger.log('PM "' + pmName + '" is not subscribed — skipping send.');
     return;
+  }
+  var pageUrl = getSubscribePageUrl_();
+  if (pageUrl) {
+    htmlBody += '<p style="color:#888;font-size:11px;">Don\'t want these emails? ' +
+      '<a href="' + pageUrl + '" style="color:#888;">Manage your subscription</a>.</p>';
   }
   GmailApp.sendEmail(email, subject, '', { htmlBody: htmlBody });
   Logger.log('Sent email to ' + pmName + ' (' + email + '): ' + subject);
@@ -169,25 +176,42 @@ function buildDailyUrgentEmailHtml_(pmName, hoursExceededRows, phasesOverThresho
 
 // ====== ROLLOUT / MIGRATION: SEED THE "FIRE ONCE" TRACKING ======
 
-// One-time, WITHOUT sending email: marks every task and phase that is over
-// its threshold right now (for ALL PMs) as already notified. Run it after
-// testNightlyBuild() on a fresh deployment, and right before adding PMs to
-// PM_EMAIL_MAP — otherwise each PM's first urgent email lists every task
-// that has EVER gone over estimate (tasks of unmapped PMs are deliberately
-// never marked, so they'd all fire at once). Afterwards only genuinely new
-// occurrences alert. Profit drops need no seeding (they compare to the
-// previous snapshot). Safe to re-run: only adds IDs not already marked.
+// WITHOUT sending email: marks every task and phase that is over its
+// threshold right now as already notified. Tasks of unsubscribed PMs are
+// deliberately never marked by the nightly alerts, so without this a PM's
+// first urgent email would list every task that has EVER gone over estimate.
+// - setMySubscription (Subscriptions.gs) does this automatically for the one
+//   PM who just subscribed (seedNotifiedTrackingForPm_).
+// - seedNotifiedTracking() does it for ALL PMs — run it on a fresh deployment
+//   after testNightlyBuild().
+// Profit drops need no seeding (they compare to the previous snapshot).
+// Safe to re-run: IDs already marked are skipped.
 function seedNotifiedTracking() {
   var todayRows = loadTodaysSnapshot_(TASK_SNAPSHOT_PREFIX);
   var phaseRows = loadTodaysSnapshot_(PHASE_SNAPSHOT_PREFIX);
   if (!todayRows || !phaseRows) {
     throw new Error('No snapshot for today — run testNightlyBuild() first.');
   }
-  var taskIds = findHoursExceededTasks_(todayRows).map(function(row) { return row.TaskId; });
+  seedFromRows_(todayRows, phaseRows, 'all PMs');
+}
+
+function seedNotifiedTrackingForPm_(pmName) {
+  var taskRows = loadLatestSnapshot_(TASK_SNAPSHOT_PREFIX);
+  var phaseRows = loadLatestSnapshot_(PHASE_SNAPSHOT_PREFIX);
+  if (!taskRows || !phaseRows) {
+    Logger.log('No snapshot yet — nothing to seed for ' + pmName + '.');
+    return;
+  }
+  seedFromRows_(taskRows.filter(function(r) { return r.SES_PM === pmName; }),
+    phaseRows.filter(function(p) { return p.SES_PM === pmName; }), pmName);
+}
+
+function seedFromRows_(taskRows, phaseRows, label) {
+  var taskIds = findHoursExceededTasks_(taskRows).map(function(row) { return row.TaskId; });
   var phaseIds = findPhasesOverThreshold_(phaseRows).map(function(phase) { return phase.PhaseTaskId; });
   markTasksAsNotified_(taskIds);
   markPhasesAsNotified_(phaseIds);
-  Logger.log('Seeded tracking without sending email: ' + taskIds.length + ' tasks over estimate, ' +
+  Logger.log('Seeded tracking for ' + label + ' without sending email: ' + taskIds.length + ' tasks over estimate, ' +
     phaseIds.length + ' phases over threshold marked as already notified.');
 }
 
@@ -217,7 +241,7 @@ function sendDailyUrgentAlertsFromSnapshot_() {
   var notifiedPhaseIds = [];
 
   Object.keys(pmSet).forEach(function(pmName) {
-    if (!getPmEmail_(pmName)) return; // not in the trial yet — don't mark their tasks/phases as notified
+    if (!getPmEmail_(pmName)) return; // not subscribed — don't mark their tasks/phases as notified
     var pmHoursExceeded = hoursExceeded.filter(function(row) { return row.SES_PM === pmName; });
     var pmPhases = phasesOverThreshold.filter(function(p) { return p.SES_PM === pmName; });
     var pmProfitDrops = profitDrops.filter(function(d) { return d.pm === pmName; });

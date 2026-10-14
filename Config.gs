@@ -11,6 +11,8 @@
 //     LockedTotals           — ProjectId | LockedLaborCost | LockedThroughDate
 //     HoursExceededNotified  — TaskId | NotifiedDate
 //     PhaseThresholdNotified — TaskId | NotifiedDate   (used by PhaseAlerts.gs)
+//     PmRoster               — SES PM Name | Email | Subscribed | Last Changed
+//                              (auto-created; PMs opt in via the sign-up page)
 //   One-time manual runs:
 //     authorize()                   — approve Birdview access (Birdview.gs)
 //     backfillProfitabilityLedger() — seed the profitability ledger (Ledger.gs)
@@ -59,10 +61,10 @@ const LAST_SUCCESS_PROPERTY_PREFIX = 'LAST_SUCCESS_'; // Script Property per sta
 
 const UNASSIGNED_PM = 'Unassigned'; // SES_PM value for projects with no "SES PM" set in Birdview
 const ADMIN_EMAIL = 'anders@theworks.pro'; // receives pipeline failure / missing-snapshot alerts
-const PM_EMAIL_MAP = {
-  'Anders': 'anders@theworks.pro' // add more PMs here as the trial expands to the full team
+// Who gets digests is decided by the PmRoster tab of the ledger spreadsheet
+// (Subscriptions.gs) — PMs opt in themselves on the sign-up page. This map is
+// ONLY used to pre-fill that tab the first time it's created, so the trial
+// deployment keeps emailing Anders. Don't add PMs here; add them to the tab.
+const INITIAL_SUBSCRIBERS = {
+  'Anders': 'anders@theworks.pro'
 };
-
-function getPmEmail_(pmName) {
-  return PM_EMAIL_MAP[pmName] || null;
-}

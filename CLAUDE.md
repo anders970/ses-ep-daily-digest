@@ -16,8 +16,9 @@ anders@theworks.pro) that:
 
 **Status: mid-trial**, running on Anders's own personal/consulting Google
 Workspace (not SES's), pulling live data from SES's Birdview via OAuth. Only
-Anders is in `PM_EMAIL_MAP` right now — see "Next steps" below for the
-rollout plan to all 13 PMs.
+Anders is subscribed right now. Next: move to SES's Workspace under
+`pmo@sesconsulting.com` and let PMs opt in — see "Open issues / next steps"
+and `docs/migration-checklist.md`.
 
 This project was originally built interactively directly in the Apps Script
 web editor; it's now managed here and synced to Apps Script with `clasp`
@@ -32,7 +33,8 @@ time), since file load order isn't something to rely on.
 
 | File | Contents |
 |---|---|
-| `Config.gs` | All shared constants (Birdview IDs, thresholds, snapshot names), `ADMIN_EMAIL`, `PM_EMAIL_MAP` + `getPmEmail_`. Setup checklist in the header. |
+| `Config.gs` | All shared constants (Birdview IDs, thresholds, snapshot names), `ADMIN_EMAIL`, `INITIAL_SUBSCRIBERS` (only pre-fills the roster tab once). Setup checklist in the header. |
+| `Subscriptions.gs` | Opt-in PM roster (`PmRoster` tab: `getPmRoster_`, `getPmEmail_`, `populatePmRoster`) and the sign-up web page (`doGet`, `getMySubscription`, `setMySubscription`). |
 | `Triggers.gs` | The staged pipeline entry points (`runNightlyDigest`, `runNightlyAlerts`, `runWeeklyDigest`), `runWithErrorAlert_` / `notifyAdmin_`, the `checkPipelineHealth_` watchdog, `setupTriggers`, `removeTriggers`, `listTriggers`. |
 | `Birdview.gs` | OAuth (`authorize`, `authCallback`, `resetBirdviewAuth`), request/paging helpers, project/PM/user-rate lookups, task/hours/assignee helpers, URL builders. |
 | `Ledger.gs` | Ledger spreadsheet access (`LEDGER_SPREADSHEET_ID` Script Property, falling back to the trial sheet's URL), `setupLedgerSpreadsheet()`, ledger backfill/nightly update + rollover, integrity check, `calculateExpectedProfitPercent_`. |
@@ -56,6 +58,8 @@ Script editor — never commit these anywhere):
 - `LEDGER_SPREADSHEET_ID` — set automatically by `setupLedgerSpreadsheet()`.
   If absent, the script falls back to the trial deployment's sheet URL
   (`LEGACY_LEDGER_SHEET_URL` in Ledger.gs).
+- `SUBSCRIBE_PAGE_URL` — the sign-up web app's `/exec` URL, linked from
+  every email (falls back to `ScriptApp.getService().getUrl()`).
 - `LAST_SUCCESS_<stage>` — written automatically by `runWithErrorAlert_`
   (ISO timestamp per stage), read by the watchdog. Don't edit.
 
@@ -65,6 +69,8 @@ Script editor — never commit these anywhere):
 - `LockedTotals` — ProjectId | LockedLaborCost | LockedThroughDate
 - `HoursExceededNotified` — TaskId | NotifiedDate
 - `PhaseThresholdNotified` — TaskId | NotifiedDate
+- `PmRoster` — SES PM Name | Email | Subscribed | Last Changed (created
+  automatically on first use, pre-filled from `INITIAL_SUBSCRIBERS`)
 
 **One-time manual runs** (via the Apps Script editor's Run dropdown) — for a
 full move to a new account/Workspace follow `docs/migration-checklist.md`:
@@ -77,8 +83,11 @@ full move to a new account/Workspace follow `docs/migration-checklist.md`:
    for all currently-open Flat Fee projects.
 3. `setupTriggers()` — installs the three time-based triggers. Re-run it
    whenever the trigger schedule in code changes.
-4. `seedNotifiedTracking()` — after `testNightlyBuild()`, before any PM is
-   added to `PM_EMAIL_MAP` (see "Notification / snapshot patterns").
+4. `seedNotifiedTracking()` — after `testNightlyBuild()` on a fresh
+   deployment (see "Notification / snapshot patterns").
+5. `populatePmRoster()`, fill in emails in the `PmRoster` tab, and deploy
+   the web app (Deploy → New deployment → Web app; save its `/exec` URL as
+   Script Property `SUBSCRIBE_PAGE_URL`).
 
 **Ongoing — staged pipeline** (each stage hands off via today's Drive
 snapshot, so no execution both builds data and sends email):
@@ -101,7 +110,7 @@ within `PIPELINE_MAX_DAYS_SINCE_SUCCESS` (4 / 8 days). It never throws. Not
 covered: ALL triggers deleted at once (nothing runs to notice). On Mondays
 the weekly stage also sends `ADMIN_EMAIL` a **coverage report** when any
 open project is in no digest (no "SES PM" set, or a PM missing from
-`PM_EMAIL_MAP`). Manual recovery: run
+roster / not subscribed). Manual recovery: run
 `testNightlyBuild()`, then `testDailyUrgentAlerts()` /
 `testWeeklyDigest()`.
 
@@ -116,7 +125,7 @@ open project is in no digest (no "SES PM" set, or a PM missing from
 - Custom field "SES PM" = internal alias `ProjectInt2`. Its value list
   gives a `FieldValueId → Value` (ID → name) mapping — always resolved
   dynamically via `getSesPmLookup_()`, never hardcoded. Current PM
-  ID↔name table (for reference, e.g. filling out `PM_EMAIL_MAP`):
+  ID↔name table (for reference, e.g. checking the `PmRoster` tab):
   Anders=95, Brad=97, Nicole=102, Sean=105, Sheldon=107, Stephanie=109,
   Henry=173, Estella=209, Omar=219, Alireza=248, Joan=262, Hirad=268,
   Lauren=269.
@@ -156,7 +165,9 @@ Expected Profit % = (EAC billable − EAC cost) / EAC billable × 100
 ```
 
 - Actual labor cost = `LockedTotals.LockedLaborCost` + sum of
-  `TimeLogDetail.Cost` for that project.
+  `TimeLogDetail.Cost` for that project — **ALL logged hours, billable and
+  non-billable** (decided 2026-10-14; before that only `Billable: true` logs
+  were counted, which is what the 0.92% verification above used).
 - ETC (Estimate To Complete) labor cost = for each task assignee,
   `PersonalHoursLeft × HourlyRateInternal` (current rate, from
   `getAllUserRates_()`).
@@ -228,12 +239,23 @@ always pass them through `escapeHtml_()` when building email HTML.
   `phase-snapshot-YYYY-MM-DD.json` phase rows, 14-day retention) are both
   the hand-off between pipeline stages and what day-over-day (profit drops)
   and week-over-week (weekly digest) comparisons are based on.
-- **PMs not in `PM_EMAIL_MAP` are skipped entirely** by the alert/digest
-  senders, and their tasks/phases are NOT marked in the "notified" sheets.
-  So adding a PM (or a fresh deployment's empty sheets) would make their
-  first urgent email list EVERY task that has ever gone over estimate —
-  **always run `seedNotifiedTracking()` first** (marks everything currently
-  over threshold, for all PMs, without sending email).
+- **Opt-in only: nobody gets email until they subscribe.** Recipients come
+  from the `PmRoster` tab of the ledger spreadsheet (SES PM Name | Email |
+  Subscribed | Last Changed). The admin fills names (`populatePmRoster()`)
+  and emails; each PM sets Subscribed themselves on the sign-up web page
+  (`Subscriptions.gs`), which identifies them by their signed-in Google
+  account (`Session.getActiveUser()` — only works for accounts in the
+  owner's Workspace, i.e. after the SES migration) and never accepts an
+  email from the client. `getPmEmail_` returns an address only for
+  subscribed PMs; every email footer links back to the page
+  (`SUBSCRIBE_PAGE_URL` Script Property). Subscribe/unsubscribe notifies
+  `ADMIN_EMAIL`.
+- **Unsubscribed PMs are skipped entirely** by the alert/digest senders, and
+  their tasks/phases are NOT marked in the "notified" sheets. So when a PM
+  subscribes, `setMySubscription` runs `seedNotifiedTrackingForPm_` (marks
+  their current backlog as notified, no email) — otherwise their first
+  urgent email would list every task that has ever gone over estimate. On a
+  fresh deployment run `seedNotifiedTracking()` (all PMs) once.
 - **Ledger sheets are read once per run** (`readLedgerCosts_()`, passed into
   `calculateExpectedProfitPercent_`) and the spreadsheet handle is cached
   per execution — don't reintroduce per-project sheet reads.
@@ -280,14 +302,10 @@ always pass them through `escapeHtml_()` when building email HTML.
    integrity check found 0 mismatches across 30 projects.
 4. *(Resolved 2026-09-28: the weekly digest no longer calls Gemini.)*
 5. **Rollout / migration — NEXT.** Anders is happy with both emails
-   (2026-10-07). Follow `docs/migration-checklist.md`: move to SES's Google
-   Workspace (new project + Script ID, Birdview OAuth redirect URI,
-   `setupLedgerSpreadsheet` → backfill → `testNightlyBuild` →
-   `seedNotifiedTracking`), then add all 13 PMs to `PM_EMAIL_MAP`, then
-   `removeTriggers()` in the trial project. Open decision: whether
-   non-billable time on Flat Fee projects should count as labour cost (the
-   ledger only fetches `Billable: true` logs today; changing it needs a
-   re-backfill).
+   (2026-10-07). Decided 2026-10-14: owner/sender account
+   `pmo@sesconsulting.com`; PMs opt in via the sign-up page (no email to
+   anyone who hasn't subscribed); labour cost counts ALL logged hours.
+   Follow `docs/migration-checklist.md` step by step.
 6. `clearNotifiedTrackingForTesting_()` / `testClearNotifiedTracking()` in
    Tests.gs are TESTING ONLY — wipe both "notified" tracking sheets so a test
    run re-flags everything. Never call from a trigger or in production.

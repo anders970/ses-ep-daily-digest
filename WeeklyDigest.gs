@@ -50,8 +50,8 @@ function sendWeeklyDigestFromSnapshot_() {
 }
 
 // Mondays, to ADMIN_EMAIL: open projects that no PM digest covers — either no
-// "SES PM" set in Birdview, or a PM name with no address in PM_EMAIL_MAP
-// (e.g. a PM added in Birdview after rollout). Sent only when there's
+// "SES PM" set in Birdview, or a PM who hasn't subscribed (or isn't in the
+// PmRoster tab / has no email there). Sent only when there's
 // something to report. (Only projects with at least one open leaf task appear
 // in the snapshot, so a project with no open tasks isn't listed.)
 function sendCoverageReport_(todayRows) {
@@ -73,10 +73,17 @@ function sendCoverageReport_(todayRows) {
     body += '\nNo "SES PM" set in Birdview (' + unassigned.length + ') — set the SES PM field on the project:\n' + unassigned.join('\n') + '\n';
   }
   if (unmappedPms.length > 0) {
-    body += '\nPMs with no email address in PM_EMAIL_MAP (Config.gs) — add them to start their digests:\n';
+    var roster = getPmRoster_().byName;
+    body += '\nPMs not receiving digests:\n';
     unmappedPms.forEach(function(pm) {
-      body += '  ' + pm + ' (' + unmappedByPm[pm].length + ' project' + (unmappedByPm[pm].length === 1 ? '' : 's') + ')\n';
+      var entry = roster[pm];
+      var why = !entry ? 'not in the PmRoster tab — run populatePmRoster()'
+        : !entry.email ? 'no email in the PmRoster tab'
+        : 'not subscribed yet';
+      body += '  ' + pm + ' (' + unmappedByPm[pm].length + ' project' + (unmappedByPm[pm].length === 1 ? '' : 's') + ') — ' + why + '\n';
     });
+    var pageUrl = getSubscribePageUrl_();
+    if (pageUrl) body += '\nSign-up page to send them: ' + pageUrl + '\n';
   }
   var uncovered = unassigned.length + unmappedPms.reduce(function(n, pm) { return n + unmappedByPm[pm].length; }, 0);
   notifyAdmin_('[Birdview Digest] Coverage report: ' + uncovered + ' project' + (uncovered === 1 ? '' : 's') + ' not in any digest', body);

@@ -153,6 +153,18 @@ function getMostRecentPastSnapshot_() {
   return JSON.parse(candidates[0].getBlob().getDataAsString());
 }
 
+// Today's snapshot for this prefix if it exists, otherwise the most recent
+// older one (e.g. when a PM subscribes on a weekend). Null if there are none.
+function loadLatestSnapshot_(prefix) {
+  var files = getSnapshotFolder_().getFiles();
+  var latest = null;
+  while (files.hasNext()) {
+    var file = files.next();
+    if (file.getName().indexOf(prefix) === 0 && (!latest || file.getName() > latest.getName())) latest = file;
+  }
+  return latest ? JSON.parse(latest.getBlob().getDataAsString()) : null;
+}
+
 // Used by the weekly digest for week-over-week profitability comparison.
 function getSnapshotFromApproxDaysAgo_(daysAgo, toleranceDays) {
   var folder = getSnapshotFolder_();

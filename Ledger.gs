@@ -97,7 +97,7 @@ function readLedgerCosts_() {
 
 // ====== LOCK DATES (always compared as 'yyyy-MM-dd' day strings) ======
 //
-// LockedThroughDate means "every billable entry dated BEFORE this day is
+// LockedThroughDate means "every time entry (billable or not) dated BEFORE this day is
 // already summed into LockedLaborCost". Entries are compared by their day
 // string, never as timestamps, so a time-zone mismatch between this script
 // and Birdview's EntryDateFrom filter can't drop an entry at the boundary.
@@ -120,7 +120,7 @@ function toLockDay_(value) {
   return text.slice(0, 10); // Birdview-style "2026-08-14T00:00:00": take the day as written
 }
 
-// Splits one project's billable time logs at cutoffDay: cost of entries dated
+// Splits one project's time logs at cutoffDay: cost of entries dated
 // before it is returned as lockedCost; the rest become TimeLogDetail rows.
 function splitTimeLogsAtDay_(projectId, timeLogs, cutoffDay) {
   var lockedCost = 0;
@@ -147,7 +147,7 @@ function backfillProfitabilityLedger() {
 
   projects.forEach(function(project) {
     var projectId = project.ProjectId;
-    var timeLogs = birdviewGetAllPages_('/api/v2/timelogs', { ProjectIds: projectId, Billable: true });
+    var timeLogs = birdviewGetAllPages_('/api/v2/timelogs', { ProjectIds: projectId });
     var split = splitTimeLogsAtDay_(projectId, timeLogs, cutoffDay);
     lockedRows.push([projectId, split.lockedCost, cutoffDay]);
     timeLogDetailRows = timeLogDetailRows.concat(split.detailRows);
@@ -158,7 +158,7 @@ function backfillProfitabilityLedger() {
   Logger.log('Done. ' + lockedRows.length + ' projects locked through ' + cutoffDay + '. ' + timeLogDetailRows.length + ' recent time logs staged.');
 }
 
-// Run every night (via runNightlyDigest). Re-fetches each project's billable
+// Run every night (via runNightlyDigest). Re-fetches each project's
 // time logs from its LockedThroughDate onward, and ROLLS OVER: entries now
 // older than LOCK_BUFFER_DAYS are added to LockedLaborCost and the lock date
 // advances to the new cutoff, so the fetch window and TimeLogDetail stay at
@@ -179,7 +179,7 @@ function dailyUpdateProfitabilityLedger() {
     var lockedLaborCost = existing ? (Number(existing.lockedLaborCost) || 0) : 0;
     var lockedThroughDay = toLockDay_(existing ? existing.lockedThroughDate : project.CreationDate);
 
-    var timeLogs = birdviewGetAllPages_('/api/v2/timelogs', { ProjectIds: projectId, Billable: true, EntryDateFrom: lockedThroughDay });
+    var timeLogs = birdviewGetAllPages_('/api/v2/timelogs', { ProjectIds: projectId, EntryDateFrom: lockedThroughDay });
 
     // Never move the lock date backwards (e.g. a project newer than the cutoff).
     var newLockedThroughDay = cutoffDay > lockedThroughDay ? cutoffDay : lockedThroughDay;
@@ -198,14 +198,14 @@ function dailyUpdateProfitabilityLedger() {
 
 // Integrity check (manual, via Tests.gs): for each project, compares the
 // ledger's actual labour cost (LockedLaborCost + TimeLogDetail) with a full
-// re-sum of every billable time log in Birdview. Returns the mismatches.
+// re-sum of every time log in Birdview. Returns the mismatches.
 function checkLedgerIntegrity_(maxProjects) {
   var ledger = readLedgerCosts_();
   var projects = getOpenFlatFeeProjects_().slice(0, maxProjects || Infinity);
   var mismatches = [];
   projects.forEach(function(project) {
     var projectId = project.ProjectId;
-    var fullCost = birdviewGetAllPages_('/api/v2/timelogs', { ProjectIds: projectId, Billable: true })
+    var fullCost = birdviewGetAllPages_('/api/v2/timelogs', { ProjectIds: projectId })
       .reduce(function(sum, log) { return sum + (log.Duration || 0) * (log.InternalRate || 0); }, 0);
     var locked = ledger.lockedMap[projectId];
     var ledgerCost = (locked ? Number(locked.lockedLaborCost) || 0 : 0) + (ledger.recentCostByProject[projectId] || 0);
@@ -223,6 +223,8 @@ function checkLedgerIntegrity_(maxProjects) {
 
 // ====== EXPECTED PROFIT % ======
 
+// Actual labour cost counts ALL logged hours (billable and non-billable) — decided
+// 2026-10-14: every hour logged on a Flat Fee project is a cost to SES.
 // Expected Profit % (Flat Fee only), reconstructed per Birdview's published formula:
 //   EAC billable = BillingAmount + planned billable expenses
 //   EAC cost     = actual labor cost + ETC labor cost + ALL planned expenses
