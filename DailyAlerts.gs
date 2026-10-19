@@ -13,7 +13,8 @@ function getProjectProfitSnapshot_(rows) {
   var map = {};
   rows.forEach(function(row) {
     if (!(row.ProjectId in map)) {
-      map[row.ProjectId] = { projectName: row.ProjectName, pm: row.SES_PM, expectedProfitPercent: row.ExpectedProfitPercent };
+      map[row.ProjectId] = { projectName: row.ProjectName, pm: row.SES_PM, expectedProfitPercent: row.ExpectedProfitPercent,
+        targetProfitPercent: row.TargetProfitPercent == null ? null : row.TargetProfitPercent };
     }
   });
   return map;

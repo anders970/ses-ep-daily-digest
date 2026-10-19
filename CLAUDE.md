@@ -42,7 +42,7 @@ time), since file load order isn't something to rely on.
 | `DailyAlerts.gs` | Profit-drop + hours-exceeded detection, shared email helpers (`escapeHtml_`, `sendDigestEmail_`), the single daily urgent email (one section per candidate alert rule) and its stage-2 orchestrator `sendDailyUrgentAlertsFromSnapshot_()`, and `seedNotifiedTracking()` (rollout/migration). |
 | `PhaseAlerts.gs` | Phase aggregation (built during the nightly build), `PhaseThresholdNotified` tracking, `findPhasesOverThreshold_` — feeds the phase section of the daily urgent email. |
 | `WeeklyDigest.gs` | Monday digest: the three task lists (0 hours left + overdue / 0 hours left / overdue), profit summary, email; plus the admin "coverage report" (`sendCoverageReport_`). |
-| `Tests.gs` | Manual-only helpers: `testNightlyBuild`, `testDailyUrgentAlerts`, `testWeeklyDigest`, `testLedgerRolloverAndIntegrity`, `verifyExpectedProfitPercent`, `printSesPmLookup`, the TESTING-ONLY tracking reset. |
+| `Tests.gs` | Manual-only helpers: `testNightlyBuild`, `testDailyUrgentAlerts`, `testWeeklyDigest`, `testLedgerRolloverAndIntegrity`, `verifyExpectedProfitPercent`, `printProjectCustomFields`, `printSesPmLookup`, the TESTING-ONLY tracking reset. |
 | `docs/` | Reference only (not pushed to Apps Script): Birdview API v2 OpenAPI spec + notes, and the SES Workspace migration checklist. See "Reference docs" below. |
 | `appsscript.json` | Manifest. Declares the `OAuth2` library dependency (Apps Script "OAuth2 for Apps Script") used for the Birdview Authorization Code Grant flow. Time zone `America/Vancouver`. |
 
@@ -129,6 +129,13 @@ roster / not subscribed). Manual recovery: run
   Anders=95, Brad=97, Nicole=102, Sean=105, Sheldon=107, Stephanie=109,
   Henry=173, Estella=209, Omar=219, Alireza=248, Joan=262, Hirad=268,
   Lauren=269.
+- **Target profit** is a project custom field, found by its label
+  (`TARGET_PROFIT_FIELD_DISPLAY_NAME` = "Target Profit", case-insensitive;
+  falls back to any project field labelled with both "target" and "profit")
+  — `getTargetProfitField_()` resolves its alias dynamically, like "SES PM".
+  The exact label is **unconfirmed** — run `printProjectCustomFields()`.
+  Values like 20 / "20%" / 0.2 all read as 20%; stored per task row as
+  `TargetProfitPercent`.
 - Closed task status = ID 1 (`COMPLETED_TASK_STATUS_IDS`).
 - Tasks: `HasChild` = true means a parent/container task — hours are never
   logged directly on these, only on leaf tasks. `ParentId` is used both for
@@ -222,9 +229,12 @@ Project Name        (link to EP project)
 └ (X more tasks)    (when a project has > WEEKLY_MAX_TASKS_PER_PROJECT (2))
 ```
 The other flags (`YELLOW_LOW_HOURS`, `DUE_SOON`, `OVER_ESTIMATE`) are still
-computed into the snapshot but not shown in the weekly email. Also shows each
-project's current Expected Profit % and its week-over-week change (via a
-snapshot from ~7 days ago, ±2 day tolerance). Birdview names are free text —
+computed into the snapshot but not shown in the weekly email. Ends with an
+"Expected profitability standing" **table** (`buildProfitabilityTableHtml_`):
+Project (link) | Expected Profit (current %, plus ▲/▼ and the pp change vs
+the snapshot from ~7 days ago, ±2 day tolerance — red if it dropped ≥
+`PROFIT_DROP_THRESHOLD`) | Target Profit (from the project custom field
+below, "—" if unset). Projects alphabetical. Birdview names are free text —
 always pass them through `escapeHtml_()` when building email HTML.
 
 

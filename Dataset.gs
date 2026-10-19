@@ -12,6 +12,7 @@ function buildNightlyData_() {
   var pmLookup = getSesPmLookup_();
   var userRateMap = getAllUserRates_();
   var ledgerCosts = readLedgerCosts_();
+  var targetField = getTargetProfitField_();
   var rows = [];
   var phaseRows = [];
 
@@ -26,6 +27,7 @@ function buildNightlyData_() {
 
     var hoursMap = getActualHoursByTaskForProject_(projectId);
     var profitData = calculateExpectedProfitPercent_(projectId, project, tasks, userRateMap, ledgerCosts);
+    var targetProfitPercent = getTargetProfitPercent_(project, targetField);
 
     tasks.forEach(function(task) {
       var actualHours = hoursMap[task.TaskId] || 0;
@@ -35,6 +37,7 @@ function buildNightlyData_() {
         ProjectName: project.Name,
         SES_PM: pmName,
         ExpectedProfitPercent: profitData.expectedProfitPercent,
+        TargetProfitPercent: targetProfitPercent,
         TaskId: task.TaskId,
         TaskName: task.Name,
         ParentBreadcrumb: buildParentBreadcrumb_(task.TaskId, taskLookup),

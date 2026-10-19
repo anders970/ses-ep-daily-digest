@@ -111,9 +111,11 @@ function buildWeeklyProfitabilitySummary_(pmName, todayRows, weekAgoRows) {
       projectId: Number(projectId),
       projectName: proj.projectName,
       todayPercent: proj.expectedProfitPercent,
+      targetPercent: proj.targetProfitPercent,
       change: hasBoth ? (proj.expectedProfitPercent - weekAgo.expectedProfitPercent) : null
     });
   });
+  summary.sort(function(a, b) { return a.projectName.localeCompare(b.projectName); });
   return summary;
 }
 
@@ -155,6 +157,30 @@ function buildWeeklyTaskSectionHtml_(title, rows, showEndDates) {
   return html;
 }
 
+// Project | Expected Profit (with week-over-week arrow + pp change) | Target Profit.
+// Inline styles only — email clients ignore <style> blocks.
+function buildProfitabilityTableHtml_(profitSummary) {
+  var cell = 'padding:5px 14px 5px 0;border-bottom:1px solid #e5e5e5;';
+  var head = 'padding:5px 14px 5px 0;border-bottom:2px solid #ccc;font-weight:bold;';
+  var pct = function(v) { return v == null ? '&#8212;' : v.toFixed(1) + '%'; };
+  var html = '<table style="border-collapse:collapse;font-size:14px;">' +
+    '<tr><th style="' + head + 'text-align:left;">Project</th>' +
+    '<th style="' + head + 'text-align:right;">Expected Profit</th>' +
+    '<th style="' + head + 'text-align:right;">Target Profit</th></tr>';
+  profitSummary.forEach(function(p) {
+    var change = '';
+    if (p.change != null) {
+      var arrow = p.change > 0 ? '&#9650;' : (p.change < 0 ? '&#9660;' : '&#8212;');
+      var color = p.change <= -PROFIT_DROP_THRESHOLD ? 'color:#c00;' : (p.change > 0 ? 'color:#080;' : 'color:#888;');
+      change = ' <span style="' + color + 'white-space:nowrap;">' + arrow + ' ' + (p.change > 0 ? '+' : '') + p.change.toFixed(1) + 'pp</span>';
+    }
+    html += '<tr><td style="' + cell + '"><a href="' + buildProjectUrl_(p.projectId) + '">' + escapeHtml_(p.projectName) + '</a></td>' +
+      '<td style="' + cell + 'text-align:right;white-space:nowrap;">' + pct(p.todayPercent) + change + '</td>' +
+      '<td style="' + cell + 'text-align:right;">' + pct(p.targetPercent) + '</td></tr>';
+  });
+  return html + '</table>';
+}
+
 function buildWeeklyDigestEmailHtml_(pmName, bothRows, noHoursLeftRows, overdueRows, profitSummary) {
   var html = '<p>Hi ' + pmName + ',</p><p>Here\'s your weekly project status digest:</p>';
 
@@ -163,20 +189,7 @@ function buildWeeklyDigestEmailHtml_(pmName, bothRows, noHoursLeftRows, overdueR
   html += buildWeeklyTaskSectionHtml_('&#128197; Open tasks with an overdue end date', overdueRows, true);
 
   if (profitSummary.length > 0) {
-    html += '<h3>&#128200; Expected profitability standing</h3><ul>';
-    profitSummary.forEach(function(p) {
-      var changeText;
-      if (p.change != null) {
-        var arrow = p.change > 0 ? '&#9650;' : (p.change < 0 ? '&#9660;' : '&#8212;');
-        var color = p.change <= -PROFIT_DROP_THRESHOLD ? 'color:#c00;' : (p.change > 0 ? 'color:#080;' : '');
-        changeText = ' <span style="' + color + '">' + arrow + ' ' + (p.change > 0 ? '+' : '') + p.change.toFixed(1) + 'pp vs last week</span>';
-      } else {
-        changeText = ' (no data from last week to compare)';
-      }
-      html += '<li><a href="' + buildProjectUrl_(p.projectId) + '"><strong>' + escapeHtml_(p.projectName) + '</strong></a>: ' +
-        (p.todayPercent != null ? p.todayPercent.toFixed(1) + '%' : 'n/a') + changeText + '</li>';
-    });
-    html += '</ul>';
+    html += '<h3>&#128200; Expected profitability standing</h3>' + buildProfitabilityTableHtml_(profitSummary);
   }
 
   html += '<p style="color:#888;font-size:12px;">Automated weekly digest from the Birdview Daily Digest trial.</p>';

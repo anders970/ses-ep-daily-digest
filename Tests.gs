@@ -81,6 +81,16 @@ function runPrintTaskBillingInfo() {
   printTaskBillingInfo(89006);
 }
 
+// Lists every project custom field (label, internal alias, type) — use it to
+// confirm TARGET_PROFIT_FIELD_DISPLAY_NAME in Config.gs.
+function printProjectCustomFields() {
+  getProjectCustomFields_().forEach(function(f) {
+    Logger.log(f.DisplayName + '  -->  ' + f.FieldName + '  (' + f.FieldDataTypeName + ')');
+  });
+  var target = getTargetProfitField_();
+  Logger.log(target ? 'Target Profit field in use: "' + target.displayName + '" (' + target.alias + ')' : 'No Target Profit field found.');
+}
+
 function printSesPmLookup() {
   var lookup = getSesPmLookup_();
   Object.keys(lookup).forEach(function(id) {
