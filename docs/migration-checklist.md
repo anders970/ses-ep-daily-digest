@@ -16,9 +16,9 @@ the old deployment changes until step 10.
   see every open Flat Fee project and all time logs/rates. (The planned
   "update my tasks" page will use each PM's own token separately — see
   CLAUDE.md item 7.)
-- **`ADMIN_EMAIL`** (Config.gs) — who gets failure, watchdog, coverage and
-  subscribe/unsubscribe notices. Probably `pmo@sesconsulting.com` itself, or
-  a person who maintains the script.
+- **`ADMIN_EMAIL` = `pmo@sesconsulting.com`** (decided 2026-10-19) — gets
+  failure, watchdog, coverage and subscribe/unsubscribe notices. Set in
+  step 4; the trial keeps `anders@theworks.pro` until then.
 - **Labour cost = ALL logged hours** (billable and non-billable) on Flat Fee
   projects (decided 2026-10-14). Already in the code; the fresh backfill in
   step 5 picks it up.
@@ -56,7 +56,7 @@ Then Project Settings → Script Properties: set `BIRDVIEW_CLIENT_ID` and
 
 ## 4. Config.gs
 
-- Set `ADMIN_EMAIL`.
+- Set `ADMIN_EMAIL = 'pmo@sesconsulting.com'`.
 - Set `INITIAL_SUBSCRIBERS` to whoever should be subscribed from day one —
   e.g. just the admin's own SES PM name + address — or `{}` for nobody. It
   is only used once, when the PmRoster tab is first created.

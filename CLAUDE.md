@@ -309,7 +309,8 @@ always pass them through `escapeHtml_()` when building email HTML.
 4. *(Resolved 2026-09-28: the weekly digest no longer calls Gemini.)*
 5. **Rollout / migration — NEXT.** Anders is happy with both emails
    (2026-10-07). Decided 2026-10-14: owner/sender account
-   `pmo@sesconsulting.com`; PMs opt in via the sign-up page (no email to
+   `pmo@sesconsulting.com`, which is also `ADMIN_EMAIL` after the move
+   (decided 2026-10-19; the trial keeps anders@ until then); PMs opt in via the sign-up page (no email to
    anyone who hasn't subscribed); labour cost counts ALL logged hours.
    Follow `docs/migration-checklist.md` step by step.
 6. `clearNotifiedTrackingForTesting_()` / `testClearNotifiedTracking()` in
