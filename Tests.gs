@@ -91,6 +91,29 @@ function printProjectCustomFields() {
   Logger.log(target ? 'Target Profit field in use: "' + target.displayName + '" (' + target.alias + ')' : 'No Target Profit field found.');
 }
 
+// Dumps every property Birdview's API returns for one open project — from
+// both the project list and /projects/{id} — to find fields the API spec
+// doesn't document (e.g. the Financials > Targets "Target profit"). Lines
+// mentioning profit/target/margin are marked with ">>>".
+function printProjectRawFields(projectName) {
+  var project = getOpenFlatFeeProjects_().find(function(p) { return p.Name === projectName; });
+  if (!project) { Logger.log('No open Flat Fee project named "' + projectName + '".'); return; }
+  var dump = function(label, obj) {
+    Logger.log('--- ' + label + ' ---');
+    Object.keys(obj).sort().forEach(function(k) {
+      var mark = /profit|target|margin/i.test(k) ? '>>> ' : '    ';
+      Logger.log(mark + k + ' = ' + JSON.stringify(obj[k]));
+    });
+  };
+  dump('From /api/v2/projects (list)', project);
+  dump('From /api/v2/projects/' + project.ProjectId, birdviewGet_('/api/v2/projects/' + project.ProjectId, {}));
+  Logger.log('Target profit as read by the digest: ' + getTargetProfitPercent_(project, getTargetProfitField_()));
+}
+
+function runPrintProjectRawFields() {
+  printProjectRawFields('Pacific Reach Radisson Fortis Study'); // Birdview UI shows target 30%, expected 22.77%
+}
+
 function printSesPmLookup() {
   var lookup = getSesPmLookup_();
   Object.keys(lookup).forEach(function(id) {

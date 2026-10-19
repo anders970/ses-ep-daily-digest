@@ -122,7 +122,7 @@ function getTargetProfitField_() {
   var field = fields.find(function(f) { return label(f) === wanted; }) ||
     fields.find(function(f) { return label(f).indexOf('target') !== -1 && label(f).indexOf('profit') !== -1; });
   if (!field) {
-    Logger.log('No project custom field labelled "' + TARGET_PROFIT_FIELD_DISPLAY_NAME + '" — Target Profit will show as "—". Run printProjectCustomFields().');
+    Logger.log('No project custom field labelled "' + TARGET_PROFIT_FIELD_DISPLAY_NAME + '" (fine if the API returns Birdview\'s built-in target profit — see printProjectRawFields()).');
     return null;
   }
   var values = {};
@@ -131,13 +131,21 @@ function getTargetProfitField_() {
 }
 
 // A project's target profit as a percentage, or null if unset/unreadable.
+// Target profit is a built-in Financials > Targets field in Birdview, which
+// the published API spec doesn't document — so first look for any top-level
+// project property named like "...Target...Profit..." (see
+// printProjectRawFields() in Tests.gs), then fall back to a custom field.
 // Accepts numbers or text like "20", "20%", "0.2"; values between -1 and 1
 // are read as fractions (0.2 -> 20%). List fields are looked up by option ID.
 function getTargetProfitPercent_(project, targetField) {
-  if (!targetField || !project.CustomFields) return null;
-  var raw = project.CustomFields[targetField.alias];
+  var raw = null;
+  var builtInKey = Object.keys(project).find(function(k) { return /target.*profit|profit.*target/i.test(k); });
+  if (builtInKey) raw = project[builtInKey];
+  if ((raw == null || raw === '') && targetField && project.CustomFields) {
+    raw = project.CustomFields[targetField.alias];
+    if (raw != null && targetField.values[raw] != null) raw = targetField.values[raw];
+  }
   if (raw == null || raw === '') return null;
-  if (targetField.values[raw] != null) raw = targetField.values[raw];
   var num = parseFloat(String(raw).replace(/[%,\s]/g, ''));
   if (isNaN(num)) return null;
   return Math.abs(num) <= 1 && num !== 0 ? num * 100 : num;

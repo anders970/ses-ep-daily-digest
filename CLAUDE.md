@@ -129,13 +129,17 @@ roster / not subscribed). Manual recovery: run
   Anders=95, Brad=97, Nicole=102, Sean=105, Sheldon=107, Stephanie=109,
   Henry=173, Estella=209, Omar=219, Alireza=248, Joan=262, Hirad=268,
   Lauren=269.
-- **Target profit** is a project custom field, found by its label
-  (`TARGET_PROFIT_FIELD_DISPLAY_NAME` = "Target Profit", case-insensitive;
-  falls back to any project field labelled with both "target" and "profit")
-  — `getTargetProfitField_()` resolves its alias dynamically, like "SES PM".
-  The exact label is **unconfirmed** — run `printProjectCustomFields()`.
-  Values like 20 / "20%" / 0.2 all read as 20%; stored per task row as
-  `TargetProfitPercent`.
+- **Target profit** is a BUILT-IN Birdview field (project Financials →
+  Targets → Profit (%) → "Target profit"; also a filterable grid column
+  "Target profit, %"), NOT a custom field — confirmed 2026-10-19. It is not
+  in the published API spec. `getTargetProfitPercent_()` reads any top-level
+  project property named like "…Target…Profit…" if the API returns one,
+  else falls back to a custom field found by label
+  (`TARGET_PROFIT_FIELD_DISPLAY_NAME`). **Unverified whether the API exposes
+  it at all** — run `runPrintProjectRawFields()` (Tests.gs; dumps the raw
+  project JSON for "Pacific Reach Radisson Fortis Study", which shows target
+  30% / expected 22.77% in the UI). Values like 20 / "20%" / 0.2 all read as
+  20%; stored per task row as `TargetProfitPercent`.
 - Closed task status = ID 1 (`COMPLETED_TASK_STATUS_IDS`).
 - Tasks: `HasChild` = true means a parent/container task — hours are never
   logged directly on these, only on leaf tasks. `ParentId` is used both for
