@@ -156,7 +156,8 @@ function buildWeeklyTaskSectionHtml_(title, rows, showEndDates) {
   return html;
 }
 
-// Project | Expected Profit (with week-over-week arrow + pp change).
+// Project | Expected Profit | Change from Last Week (arrow + pp; red if it
+// dropped by PROFIT_DROP_THRESHOLD or more, "—" if there's no week-ago snapshot).
 // Inline styles only — email clients ignore <style> blocks.
 function buildProfitabilityTableHtml_(profitSummary) {
   var cell = 'padding:5px 14px 5px 0;border-bottom:1px solid #e5e5e5;';
@@ -164,16 +165,18 @@ function buildProfitabilityTableHtml_(profitSummary) {
   var pct = function(v) { return v == null ? '&#8212;' : v.toFixed(1) + '%'; };
   var html = '<table style="border-collapse:collapse;font-size:14px;">' +
     '<tr><th style="' + head + 'text-align:left;">Project</th>' +
-    '<th style="' + head + 'text-align:right;">Expected Profit</th></tr>';
+    '<th style="' + head + 'text-align:right;">Expected Profit</th>' +
+    '<th style="' + head + 'text-align:right;">Change from Last Week</th></tr>';
   profitSummary.forEach(function(p) {
-    var change = '';
+    var change = '<span style="color:#888;">&#8212;</span>';
     if (p.change != null) {
       var arrow = p.change > 0 ? '&#9650;' : (p.change < 0 ? '&#9660;' : '&#8212;');
       var color = p.change <= -PROFIT_DROP_THRESHOLD ? 'color:#c00;' : (p.change > 0 ? 'color:#080;' : 'color:#888;');
-      change = ' <span style="' + color + 'white-space:nowrap;">' + arrow + ' ' + (p.change > 0 ? '+' : '') + p.change.toFixed(1) + 'pp</span>';
+      change = '<span style="' + color + '">' + arrow + ' ' + (p.change > 0 ? '+' : '') + p.change.toFixed(1) + 'pp</span>';
     }
     html += '<tr><td style="' + cell + '"><a href="' + buildProjectUrl_(p.projectId) + '">' + escapeHtml_(p.projectName) + '</a></td>' +
-      '<td style="' + cell + 'text-align:right;white-space:nowrap;">' + pct(p.todayPercent) + change + '</td></tr>';
+      '<td style="' + cell + 'text-align:right;white-space:nowrap;">' + pct(p.todayPercent) + '</td>' +
+      '<td style="' + cell + 'text-align:right;white-space:nowrap;">' + change + '</td></tr>';
   });
   return html + '</table>';
 }
@@ -186,7 +189,7 @@ function buildWeeklyDigestEmailHtml_(pmName, bothRows, noHoursLeftRows, overdueR
   html += buildWeeklyTaskSectionHtml_('&#128197; Open tasks with an overdue end date', overdueRows, true);
 
   if (profitSummary.length > 0) {
-    html += '<h3>&#128200; Expected profitability standing</h3>' + buildProfitabilityTableHtml_(profitSummary);
+    html += '<h3>&#128200; Expected profit standing</h3>' + buildProfitabilityTableHtml_(profitSummary);
   }
 
   html += '<p style="color:#888;font-size:12px;">Automated weekly digest from the Birdview Daily Digest trial.</p>';

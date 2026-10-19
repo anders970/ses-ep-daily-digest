@@ -227,10 +227,10 @@ Project Name        (link to EP project)
 ```
 The other flags (`YELLOW_LOW_HOURS`, `DUE_SOON`, `OVER_ESTIMATE`) are still
 computed into the snapshot but not shown in the weekly email. Ends with an
-"Expected profitability standing" **table** (`buildProfitabilityTableHtml_`):
-Project (link) | Expected Profit (current %, plus ▲/▼ and the pp change vs
-the snapshot from ~7 days ago, ±2 day tolerance — red if it dropped ≥
-`PROFIT_DROP_THRESHOLD`). Projects alphabetical. Birdview names are free text —
+"Expected profit standing" **table** (`buildProfitabilityTableHtml_`):
+Project (link) | Expected Profit (current %) | Change from Last Week (▲/▼ and
+the pp change vs the snapshot from ~7 days ago, ±2 day tolerance — red if it
+dropped ≥ `PROFIT_DROP_THRESHOLD`; "—" if no week-ago snapshot). Projects alphabetical. Birdview names are free text —
 always pass them through `escapeHtml_()` when building email HTML.
 
 
