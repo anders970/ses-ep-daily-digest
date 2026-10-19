@@ -27,11 +27,6 @@ const BIRDVIEW_BASE = 'https://ses.go.easyprojects.net';
 const PROJECT_STATUS_OPEN = 4;
 const BILLING_TYPE_FIXED_FEE = 5; // Birdview's internal name: "ProjectFixedCost"
 const CUSTOM_FIELD_SES_PM = 'ProjectInt2';
-// Label (DisplayName) of the project custom field holding the target profit %,
-// shown in the weekly digest. Matched case-insensitively; if there's no exact
-// match, any project field whose label contains "target" and "profit" is used.
-// Run printProjectCustomFields() (Tests.gs) to see the real labels.
-const TARGET_PROFIT_FIELD_DISPLAY_NAME = 'Target Profit';
 const COMPLETED_TASK_STATUS_IDS = [1]; // Closed
 const PROJECT_URL_BASE = BIRDVIEW_BASE + '/1/activities/project/'; // same-file const, defined above
 const TASK_URL_BASE = BIRDVIEW_BASE + '/1/activities/activity/';

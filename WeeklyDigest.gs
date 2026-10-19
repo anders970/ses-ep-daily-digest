@@ -111,7 +111,6 @@ function buildWeeklyProfitabilitySummary_(pmName, todayRows, weekAgoRows) {
       projectId: Number(projectId),
       projectName: proj.projectName,
       todayPercent: proj.expectedProfitPercent,
-      targetPercent: proj.targetProfitPercent,
       change: hasBoth ? (proj.expectedProfitPercent - weekAgo.expectedProfitPercent) : null
     });
   });
@@ -157,7 +156,7 @@ function buildWeeklyTaskSectionHtml_(title, rows, showEndDates) {
   return html;
 }
 
-// Project | Expected Profit (with week-over-week arrow + pp change) | Target Profit.
+// Project | Expected Profit (with week-over-week arrow + pp change).
 // Inline styles only — email clients ignore <style> blocks.
 function buildProfitabilityTableHtml_(profitSummary) {
   var cell = 'padding:5px 14px 5px 0;border-bottom:1px solid #e5e5e5;';
@@ -165,8 +164,7 @@ function buildProfitabilityTableHtml_(profitSummary) {
   var pct = function(v) { return v == null ? '&#8212;' : v.toFixed(1) + '%'; };
   var html = '<table style="border-collapse:collapse;font-size:14px;">' +
     '<tr><th style="' + head + 'text-align:left;">Project</th>' +
-    '<th style="' + head + 'text-align:right;">Expected Profit</th>' +
-    '<th style="' + head + 'text-align:right;">Target Profit</th></tr>';
+    '<th style="' + head + 'text-align:right;">Expected Profit</th></tr>';
   profitSummary.forEach(function(p) {
     var change = '';
     if (p.change != null) {
@@ -175,8 +173,7 @@ function buildProfitabilityTableHtml_(profitSummary) {
       change = ' <span style="' + color + 'white-space:nowrap;">' + arrow + ' ' + (p.change > 0 ? '+' : '') + p.change.toFixed(1) + 'pp</span>';
     }
     html += '<tr><td style="' + cell + '"><a href="' + buildProjectUrl_(p.projectId) + '">' + escapeHtml_(p.projectName) + '</a></td>' +
-      '<td style="' + cell + 'text-align:right;white-space:nowrap;">' + pct(p.todayPercent) + change + '</td>' +
-      '<td style="' + cell + 'text-align:right;">' + pct(p.targetPercent) + '</td></tr>';
+      '<td style="' + cell + 'text-align:right;white-space:nowrap;">' + pct(p.todayPercent) + change + '</td></tr>';
   });
   return html + '</table>';
 }
