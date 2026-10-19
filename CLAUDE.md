@@ -329,7 +329,9 @@ always pass them through `escapeHtml_()` when building email HTML.
      web app can be restricted to signed-in SES accounts and the signed-in
      Google user can be trusted/matched to a Birdview user (by email).
    - API mechanics are in `docs/birdview-api-notes.md`: end date via
-     read-modify-write `PUT /api/v2/tasks/{id}` (no PATCH for tasks);
+     read-modify-write `PUT /api/v2/tasks/{id}` (v2 has no PATCH; v3
+     PREVIEW adds `PATCH /api/v3/tasks/{id}` and `GET /api/v3/me` — prefer
+     those if v3 is stable by then);
      hours left per assignee via `PUT /api/v2/tasks/assignees/{id}`
      (`PersonalHoursLeft` — what the ETC cost uses); optional audit note via
      `POST /api/v2/tasks/{id}/messages`. Several behaviours are unverified —
@@ -341,6 +343,10 @@ always pass them through `escapeHtml_()` when building email HTML.
 
 - `docs/birdview-openapi-v2.json` — full Birdview API v2 OpenAPI spec
   (exported 2026-09-29). Check it before assuming an endpoint or field exists.
+- `docs/birdview-openapi-v3.json` — the v3 **PREVIEW** spec (exported
+  2026-10-19). Same data models as v2 (no target/expected profit); adds
+  `PATCH` for tasks, `GET /api/v3/me` and webhooks — useful for item 7.
+  The code still uses v2.
 - `docs/birdview-api-notes.md` — summary of the endpoints this project reads
   today and the write endpoints for item 7, with what's still unverified.
 - `docs/migration-checklist.md` — step-by-step move to SES's Google

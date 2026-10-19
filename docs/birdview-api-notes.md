@@ -73,3 +73,30 @@ There is no "current user" endpoint. `GET /api/v2/users` returns
 `UserModel` with `EMail`, so a signed-in Google account can be matched to a
 Birdview `UserId` by email (assumes SES Google emails == Birdview emails —
 **unverified**).
+
+## API v3 (PREVIEW) — `birdview-openapi-v3.json`
+
+Exported 2026-10-19 ("Birdview PSA API PREVIEW", v3). Compared with v2:
+
+- **Same data models.** `ProjectModel`, `TaskModel`, `UserModel` and
+  `TaskAssigneeModel` have exactly the same fields as v2. Still **no target
+  profit, expected profit or margin** anywhere in the spec, so there's no
+  reason to move the nightly reads to v3.
+- Time logs gain a `Status` (workflow/approval status; ids from
+  `GET /api/v3/timelogs/statuses`, filter with `Statuses`).
+- `Text` search filter on `GET /projects` and `GET /tasks`.
+- **`PATCH /api/v3/tasks/{id}`** (also projects, users): partial update,
+  `application/merge-patch+json`. Explicit `null` is applied as the new
+  value, so send only the fields being changed. Removes the read-modify-write
+  `PUT` for the planned "update flagged tasks" page (item 7) — prefer it.
+- **`GET /api/v3/me`** — "current user profile and permissions". With each
+  PM's own OAuth token this identifies their Birdview user directly, instead
+  of matching emails via `GET /users` (item 7).
+- **Webhooks** (`POST /api/v3/webhooks`): events such as `TaskDatesChanged`,
+  `TaskEstimatedHoursChanged`, `TaskStatusChanged`, `TimeEntryAdded`,
+  `ProjectBudgetChanged`. Not needed for a nightly batch job; noted for later.
+- Also new: payments, teams, `projects/from-template`,
+  `projects/{id}/tasks/duplicate`, creating custom fields.
+
+It's marked PREVIEW — endpoints may change. v2 remains what the code uses.
+All of the above is **unverified** against the live instance.
